@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Empire Tycoon - 帝国大亨</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --panel: rgba(22, 33, 62, 0.95);
+      --text: #ECF0F1;
+      --accent: #2E75B6;
+      --primary: #3498DB;
+      --danger: #E74C3C;
+      --success: #2ECC71;
+      --warning: #F39C12;
+      --gold: #FFD700;
+      --muted: #95A5A6;
+      --radius: 10px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* ===== 游戏容器 ===== */
+    #game-wrapper {
+      position: relative;
+      width: 1400px;
+      height: 900px;
+      max-width: 100vw;
+      max-height: 100vh;
+    }
+
+    #game-canvas {
+      display: block;
+      border-radius: 6px;
+      position: absolute;
+      top: 0; left: 0;
+      z-index: 1;
+    }
+
+    /* ===== UI 层 ===== */
+    #ui-layer {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 10;
+      pointer-events: none;
+    }
+    #ui-layer > div { pointer-events: auto; }
+
+    /* ===== HUD 顶部栏 ===== */
+    #hud-bar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 56px;
+      background: linear-gradient(180deg, rgba(22,33,62,0.97) 0%, rgba(22,33,62,0.85) 100%);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 20px;
+      display: none;
+    }
+
+    #hud-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    #hud-turn {
+      font-size: 13px; color: var(--gold); font-weight: bold;
+      white-space: nowrap;
+    }
+    #hud-cpi {
+      font-size: 11px; color: var(--muted);
+    }
+    #hud-cycle {
+      font-size: 11px; padding: 2px 8px; border-radius: 10px;
+      background: rgba(52,152,219,0.2); color: var(--primary);
+    }
+    #hud-layer {
+      font-size: 11px; color: var(--muted);
+      background: rgba(255,255,255,0.05); padding: 4px 10px; border-radius: 4px;
+    }
+
+    #hud-players {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .hud-player-card {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.04);
+      border: 2px solid transparent;
+      transition: all 0.3s;
+    }
+    .hud-player-card.active {
+      border-color: var(--gold);
+      background: rgba(255,215,0,0.08);
+      transform: scale(1.04);
+    }
+    .hud-player-card.bankrupt {
+      opacity: 0.35;
+      text-decoration: line-through;
+    }
+    .hud-player-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.3);
+    }
+    .hud-player-name {
+      font-size: 12px; font-weight: bold; color: var(--text);
+    }
+    .hud-player-cash {
+      font-size: 11px; color: var(--success);
+    }
+    .hud-player-ai-badge {
+      font-size: 9px; color: var(--gold); background: rgba(255,215,0,0.15);
+      padding: 1px 5px; border-radius: 6px;
+    }
+
+    /* ===== 操作面板 ===== */
+    #action-panel {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 800px;
+    }
+    .action-btn {
+      padding: 10px 24px;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: bold;
+      font-family: inherit;
+      cursor: pointer;
+      color: #fff;
+      transition: all 0.2s;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      position: relative;
+      overflow: hidden;
+    }
+    .action-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 25px rgba(0,0,0,0.4);
+      filter: brightness(1.15);
+    }
+    .action-btn:active {
+      transform: scale(0.96);
+      filter: brightness(0.9);
+    }
+    .action-btn.disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      pointer-events: none;
+      filter: grayscale(0.5);
+    }
+    .btn-buy { background: linear-gradient(135deg, #2ECC71, #27AE60); }
+    .btn-upgrade { background: linear-gradient(135deg, #9B59B6, #8E44AD); }
+    .btn-auction { background: linear-gradient(135deg, #F39C12, #E67E22); }
+    .btn-skip { background: linear-gradient(135deg, #7F8C8D, #6C7A7A); }
+    .btn-end-turn { background: linear-gradient(135deg, #3498DB, #2980B9); }
+    .btn-casino { background: linear-gradient(135deg, #E91E63, #C2185B); }
+    .btn-danger { background: linear-gradient(135deg, #E74C3C, #C0392B); }
+
+    /* ===== 主菜单 ===== */
+    #main-menu {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(22,33,62,0.5) 0%, rgba(10,12,20,0.9) 100%);
+    }
+    #menu-logo {
+      font-size: 52px; font-weight: bold;
+      background: linear-gradient(135deg, #FFD700, #F39C12);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 4px;
+      letter-spacing: 2px;
+    }
+    #menu-subtitle {
+      font-size: 18px; color: var(--muted);
+      margin-bottom: 40px;
+      letter-spacing: 6px;
+    }
+    #menu-cards {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .menu-card {
+      width: 200px;
+      padding: 28px 20px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.3s;
+      backdrop-filter: blur(5px);
+    }
+    .menu-card:hover {
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(255,255,255,0.18);
+      transform: translateY(-6px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    }
+    .menu-card-icon { font-size: 40px; margin-bottom: 12px; }
+    .menu-card-title { font-size: 16px; font-weight: bold; color: var(--text); margin-bottom: 6px; }
+    .menu-card-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+    #menu-options {
+      margin-top: 28px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .menu-diff-btn {
+      padding: 8px 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .menu-diff-btn:hover { background: rgba(255,255,255,0.1); }
+    .menu-diff-btn.selected { border-color: var(--gold); color: var(--gold); }
+    #menu-footer {
+      margin-top: 32px;
+      font-size: 11px; color: rgba(255,255,255,0.25);
+    }
+
+    /* ===== 弹窗层 ===== */
+    #modal-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(3px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+    }
+    #modal-overlay.visible { display: flex; }
+
+    .modal-card {
+      background: linear-gradient(180deg, rgba(30,40,70,0.98) 0%, rgba(22,33,62,0.98) 100%);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      padding: 28px 32px;
+      min-width: 360px;
+      max-width: 500px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      text-align: center;
+      animation: modalIn 0.3s ease-out;
+    }
+    @keyframes modalIn {
+      from { transform: translateY(30px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .modal-title {
+      font-size: 22px; font-weight: bold; color: var(--gold);
+      margin-bottom: 12px;
+    }
+    .modal-body {
+      font-size: 14px; color: var(--text);
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+    .modal-btn {
+      padding: 10px 32px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      color: #fff;
+      cursor: pointer;
+      margin: 0 6px;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    .modal-btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+
+    .modal-card.gameover { min-width: 440px; }
+    .gameover-stats {
+      display: flex; gap: 16px; justify-content: center;
+      margin: 12px 0;
+    }
+    .gameover-stat {
+      text-align: center;
+      padding: 8px 16px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px;
+    }
+    .gameover-stat-val { font-size: 20px; font-weight: bold; color: var(--gold); }
+    .gameover-stat-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ===== 事件日志 ===== */
+    #event-log {
+      position: absolute;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      display: none;
+      font-size: 11px;
+      line-height: 1.8;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+      z-index: 30;
+    }
+    #event-log::-webkit-scrollbar { width: 4px; }
+    #event-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+    .log-item {
+      color: rgba(255,255,255,0.8);
+      animation: logFadeIn 0.3s ease-out;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      padding: 1px 0;
+      font-weight: 400;
+    }
+    @keyframes logFadeIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
+    .log-income { color: #2ECC71; }
+    .log-expense { color: #FF6B6B; }
+    .log-system { color: #5DADE2; }
+    .log-warning { color: #F39C12; }
+
+    /* ===== 通知 ===== */
+    #notification {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 28px;
+      font-weight: bold;
+      color: var(--gold);
+      text-shadow: 0 0 30px rgba(255,215,0,0.4);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s;
+      z-index: 15;
+    }
+    #notification.show { opacity: 1; }
+
+    /* ===== 快捷提示 ===== */
+    #tooltip {
+      position: absolute;
+      padding: 6px 12px;
+      background: rgba(0,0,0,0.85);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+      font-size: 11px;
+      color: #fff;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+      z-index: 25;
+    }
+
+    /* ===== 快捷键提示栏 ===== */
+    #shortcut-bar {
+      position: absolute;
+      bottom: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      gap: 14px;
+      padding: 6px 20px;
+      background: rgba(0,0,0,0.5);
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 11px;
+      color: rgba(255,255,255,0.55);
+      pointer-events: none;
+      z-index: 5;
+    }
+    .shortcut-key {
+      display: inline-block;
+      background: rgba(255,255,255,0.12);
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-right: 3px;
+      font-weight: bold;
+      color: rgba(255,255,255,0.75);
+    }
+
+    /* ===== 响应式 ===== */
+    @media (max-width: 900px) {
+      #game-wrapper { width: 100vw; height: 100vw; }
+      #menu-cards { flex-direction: column; align-items: center; }
+      .menu-card { width: 80%; }
+      #menu-logo { font-size: 36px; }
+      #hud-bar { height: 44px; padding: 0 8px; gap: 10px; }
+      .hud-player-card { padding: 2px 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="game-wrapper">
+    <!-- Canvas 层 -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- UI 层 -->
+    <div id="ui-layer">
+
+      <!-- 主菜单 -->
+      <div id="main-menu">
+        <div id="menu-logo">EMPIRE TYCOON</div>
+        <div id="menu-subtitle">帝 国 大 亨</div>
+        <div id="menu-cards">
+          <div class="menu-card" data-mode="ai">
+            <div class="menu-card-icon">🤖</div>
+            <div class="menu-card-title">AI 单机模式</div>
+            <div class="menu-card-desc">1人 vs 3个AI对手<br>选择难度与性格</div>
+          </div>
+          <div class="menu-card" data-mode="hotseat">
+            <div class="menu-card-icon">👥</div>
+            <div class="menu-card-title">热座多人模式</div>
+            <div class="menu-card-desc">2-4人同机轮流<br>无需网络即开即玩</div>
+          </div>
+          <div class="menu-card" data-mode="online">
+            <div class="menu-card-icon">🌐</div>
+            <div class="menu-card-title">在线联机模式</div>
+            <div class="menu-card-desc">WebSocket 联机<br>局域网 / 远程对战</div>
+          </div>
+        </div>
+        <div id="menu-options">
+          <span style="font-size:13px;color:#95A5A6;">AI 难度:</span>
+          <button class="menu-diff-btn" data-diff="EASY">简单</button>
+          <button class="menu-diff-btn selected" data-diff="NORMAL">普通</button>
+          <button class="menu-diff-btn" data-diff="HARD">困难</button>
+        </div>
+        <div id="menu-footer">v1.0 · TypeScript + Canvas · 10,000+ 行</div>
+      </div>
+
+      <!-- HUD 顶栏 -->
+      <div id="hud-bar">
+        <div id="hud-left">
+          <span id="hud-turn">第 1 轮 · 回合 1</span>
+          <span id="hud-cpi">CPI: 100.0</span>
+          <span id="hud-cycle">经济: 正常</span>
+          <span id="hud-layer">地面层</span>
+        </div>
+        <div id="hud-players"></div>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div id="action-panel"></div>
+
+      <!-- 事件日志 -->
+      <div id="event-log"></div>
+
+      <!-- 弹窗 -->
+      <div id="modal-overlay">
+        <div class="modal-card" id="modal-content"></div>
+      </div>
+
+      <!-- 中央通知 -->
+      <div id="notification"></div>
+
+      <!-- 快捷键提示栏 -->
+      <div id="shortcut-bar">
+        <span><span class="shortcut-key">R</span> 掷骰</span>
+        <span><span class="shortcut-key">1-3</span> 切换层</span>
+        <span><span class="shortcut-key">G</span> 加速</span>
+        <span><span class="shortcut-key">Esc</span> 菜单</span>
+        <span><span class="shortcut-key">F5</span> 存档</span>
+      </div>
+
+      <!-- 提示 -->
+      <div id="tooltip"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "empire-tycoon",
+  "version": "1.0.0",
+  "description": "Empire Tycoon - 帝国大亨 回合制策略棋盘游戏",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "server": "npx tsx server/Server.ts",
+    "start": "concurrently \"npm run dev\" \"npm run server\""
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "concurrently": "^8.2.2",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12"
+  }
+}
