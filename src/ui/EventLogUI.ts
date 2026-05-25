@@ -182,10 +182,10 @@ export class EventLogUI {
 
   // ---- 日志写入 ----
 
-  add(message: string, category: LogCategory = 'system'): void {
+  add(message: string, category: LogCategory = 'system', playerName?: string, playerColor?: string): void {
     this.entries.push({ message, category, timestamp: Date.now() });
     if (this.entries.length > this.maxEntries) this.entries.shift();
-    this.renderEntry(message, category);
+    this.renderEntry(message, category, playerName, playerColor);
   }
 
   income(msg: string): void { this.add(msg, 'income'); }
@@ -193,13 +193,25 @@ export class EventLogUI {
   system(msg: string): void { this.add(msg, 'system'); }
   warning(msg: string): void { this.add(msg, 'warning'); }
 
-  private renderEntry(message: string, category: LogCategory): void {
+  private renderEntry(message: string, category: LogCategory, playerName?: string, playerColor?: string): void {
     const body = this.getBody();
-    if (this.collapsed) return; // 折叠时不渲染但保留
+    if (this.collapsed) return;
 
     const div = document.createElement('div');
     div.className = `log-item log-${category}`;
-    div.textContent = message;
+
+    if (playerName && playerColor) {
+      const s = document.createElement('span');
+      s.textContent = playerName;
+      s.style.cssText = `color:${playerColor};font-weight:bold;`;
+      div.appendChild(s);
+      const m = document.createElement('span');
+      m.textContent = ' ' + message;
+      div.appendChild(m);
+    } else {
+      div.textContent = message;
+    }
+
     body.appendChild(div);
     body.scrollTop = body.scrollHeight;
 

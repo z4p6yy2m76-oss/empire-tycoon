@@ -154,7 +154,7 @@ bus.on('turn.start', (data) => {
 bus.on('dice.roll', (data) => {
   const player = state.getPlayer(data.playerId);
   const name = player?.name ?? data.playerId;
-  ui.log.system(`${name} 掷出 ${data.values[0]}+${data.values[1]}=${data.total}${data.values[0] === data.values[1] ? ' (对子!)' : ''}`);
+  ui.log.add(`掷出 ${data.values[0]}+${data.values[1]}=${data.total}${data.values[0] === data.values[1] ? ' (对子!)' : ''}`, 'system', name, player?.color ?? '#FFF');
 });
 
 bus.on('money.change', (data) => {
@@ -574,6 +574,7 @@ function afterTurn(): void {
       id: 'roll_dice', text: '🎲 掷骰子', cssClass: 'btn-end-turn',
       disabled: false, onClick: () => handleDiceRoll()
     }]);
+    ui.log.add('轮到你了', 'system', next.name, next.color);
   } else {
     const delay = gameSpeed === 3 ? 0 : gameSpeed === 2 ? 150 : 800;
     setTimeout(() => handleDiceRoll(), delay);
