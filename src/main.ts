@@ -72,6 +72,10 @@ let gameOverTriggered = false;
 let tileProcessed = false;
 let gameSpeed: 1 | 2 | 3 = 1; // 1=正常 2=快速 3=瞬间
 
+// 全局地产所有权映射（因为 findTile 每次创建新对象，不能靠 tile.ownerId）
+const propertyOwners = new Map<number, string>(); // tileId → playerId
+const propertyLevels = new Map<number, number>(); // tileId → 升级等级
+
 const ctx = canvas.getContext('2d')!;
 const renderer = new Renderer(ctx);
 renderer.setMapLayers(mapLayers);
@@ -116,6 +120,12 @@ window.addEventListener('keydown', (e) => {
   if (e.key === '1') { renderer.switchLayer(0); refreshHUD(); }
   if (e.key === '2') { renderer.switchLayer(1); refreshHUD(); }
   if (e.key === '3') { renderer.switchLayer(2); refreshHUD(); }
+  if (e.key === 'o' || e.key === 'O') {
+    const p = state.getCurrentPlayer();
+    if (p && p.isHuman && state.phase === GamePhase.TILE_TRIGGER) {
+      turnSys.endTurn(p); afterTurn();
+    }
+  }
   if (e.key === 'g' || e.key === 'G') {
     gameSpeed = gameSpeed === 1 ? 2 : gameSpeed === 2 ? 3 : 1;
     const labels = { 1: '🐢 正常速度', 2: '🐇 快速模式', 3: '⚡ 瞬间模式' };
@@ -337,17 +347,46 @@ function handleTileTrigger(): void {
   ui.actions.clear();
   const bw = 170, hw = 42;
 
-  if (tile instanceof PropertyTile && !tile.owned && tile.getPrice() > 0) {
-    ui.actions.addButton({ id: 'buy', text: `购买 $${tile.getPrice()}`, cssClass: 'btn-buy', disabled: !player.canAfford(tile.getPrice()), onClick: () => { economySys.buyProperty(player, tile); turnSys.endTurn(player); afterTurn(); } });
-    ui.actions.addButton({ id: 'auction', text: '触发拍卖', cssClass: 'btn-auction', disabled: false, onClick: () => { auctionSys.startAuction(tile, state.getActivePlayers()); turnSys.endTurn(player); afterTurn(); } });
+  const ownerId = propertyOwners.get(tile.id);
+  if (tile instanceof PropertyTile && !ownerId && tile.getPrice() > 0) {
+    ui.actions.addButton({ id: 'buy', text: `购买 $${tile.getPrice()}`, cssClass: 'btn-buy', disabled: !player.canAfford(tile.getPrice()), onClick: () => {
+      propertyOwners.set(tile.id, player.id);
+      propertyLevels.set(tile.id, 0);
+      player.addProperty(tile.id, tile.getPrice());
+      player.cash -= tile.getPrice();
+      ui.log.system(`购入 ${tile.name}，-$ ${tile.getPrice()}`);
+      refreshHUD();
+      turnSys.endTurn(player); afterTurn();
+    }});
+    ui.actions.addButton({ id: 'auction', text: '触发拍卖', cssClass: 'btn-auction', disabled: false, onClick: () => { turnSys.endTurn(player); afterTurn(); } });
   }
 
-  if (tile instanceof PropertyTile && tile.ownerId === player.id && tile.canUpgrade()) {
-    ui.actions.addButton({ id: 'upgrade', text: `升级 $${tile.upgradeCost}`, cssClass: 'btn-upgrade', disabled: !player.canAfford(tile.upgradeCost), onClick: () => { economySys.upgradeProperty(player, tile); turnSys.endTurn(player); afterTurn(); } });
+  if (tile instanceof PropertyTile && ownerId === player.id) {
+    const lv = propertyLevels.get(tile.id) ?? 0;
+    if (lv < 3) {
+      const cost = tile.upgradeCosts[lv] ?? 0;
+      ui.actions.addButton({ id: 'upgrade', text: `升级 Lv${lv}→${lv+1} $${cost}`, cssClass: 'btn-upgrade', disabled: !player.canAfford(cost), onClick: () => {
+        player.cash -= cost;
+        propertyLevels.set(tile.id, lv + 1);
+        ui.log.system(`${tile.name} 升级至 Lv${lv + 1}，-$ ${cost}`);
+        renderer.effects.upgradeSparkle(tile.x, tile.y);
+        refreshHUD();
+        turnSys.endTurn(player); afterTurn();
+      }});
+    }
   }
 
-  if (tile instanceof PropertyTile && tile.ownerId && tile.ownerId !== player.id) {
-    economySys.collectRent(tile, player);
+  if (tile instanceof PropertyTile && ownerId && ownerId !== player.id) {
+    const lv = propertyLevels.get(tile.id) ?? 0;
+    const rent = tile.rentTable[Math.min(lv, tile.rentTable.length - 1)][0];
+    const cpiRent = Math.floor(rent * state.economy.cpiMultiplier);
+    if (player.payAmount(cpiRent)) {
+      const owner = state.getPlayer(ownerId);
+      if (owner) owner.addMoney(cpiRent, `过路费: ${tile.name}`);
+      ui.log.expense(`${player.name} 付过路费 $${cpiRent} → ${owner?.name ?? '?'}`);
+      renderer.effects.moneyFly(tile.x, tile.y, -cpiRent, '#E74C3C');
+      refreshHUD();
+    }
   }
 
   if (tile instanceof StartTile) economySys.paySalary(player, 1500); // 降为1500
@@ -363,6 +402,20 @@ function handleTileTrigger(): void {
       renderer.switchLayer(targetLayer);
       ui.notify.layerSwitch(targetLayerData.name);
     }
+  }
+
+  if (tile instanceof AirportTile) {
+    ui.log.system(`${player.name} 到达机场 — 你可以飞到任意层`);
+    renderer.effects.teleportSwirl(tile.x, tile.y);
+    ui.actions.addButton({ id: 'airport_l0', text: '✈️ 飞往地面层', cssClass: 'btn-end-turn', disabled: player.currentLayer === 0, onClick: () => {
+      player.currentLayer = 0; player.currentTileId = 0; renderer.switchLayer(0); ui.notify.layerSwitch('地面层'); turnSys.endTurn(player); afterTurn();
+    }});
+    ui.actions.addButton({ id: 'airport_l1', text: '✈️ 飞往地下层', cssClass: 'btn-upgrade', disabled: player.currentLayer === 1, onClick: () => {
+      player.currentLayer = 1; player.currentTileId = 100; renderer.switchLayer(1); ui.notify.layerSwitch('地下层'); turnSys.endTurn(player); afterTurn();
+    }});
+    ui.actions.addButton({ id: 'airport_l2', text: '✈️ 飞往天空层', cssClass: 'btn-buy', disabled: player.currentLayer === 2, onClick: () => {
+      player.currentLayer = 2; player.currentTileId = 200; renderer.switchLayer(2); ui.notify.layerSwitch('天空层'); turnSys.endTurn(player); afterTurn();
+    }});
   }
 
   if (tile instanceof CasinoTile) {
@@ -662,9 +715,12 @@ function startGame(): void {
   const first = state.getCurrentPlayer();
   if (first) {
     turnSys.beginTurn(first);
-    ui.log.system(`=== Empire Tycoon 帝国大亨 ===`);
-    ui.notify.playerTurn(first.name);
-    if (!first.isHuman) setTimeout(() => handleDiceRoll(), 1000);
+    ui.log.system('=== Empire Tycoon 帝国大亨 ===');
+    if (first.isHuman) {
+      ui.actions.setButtons([{ id: 'roll_dice', text: '🎲 掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+    } else {
+      setTimeout(() => handleDiceRoll(), 800);
+    }
   }
 }
 
