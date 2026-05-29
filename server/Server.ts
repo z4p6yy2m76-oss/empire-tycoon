@@ -9,7 +9,7 @@ import { RoomManager } from './RoomManager';
 import { MessageType, type NetworkMessage, deserializeMessage } from '../src/network/NetworkProtocol';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
-const wss = new WebSocketServer({ port: PORT });
+const wss = new WebSocketServer({ port: PORT, host: '0.0.0.0' });
 const rooms = new RoomManager();
 
 console.log(`[Empire Tycoon Server] 已启动，端口: ${PORT}`);
@@ -165,5 +165,20 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
+// 获取本机局域网 IP
+const os = require('os');
+const interfaces = os.networkInterfaces();
+let localIP = 'localhost';
+for (const name of Object.keys(interfaces)) {
+  for (const iface of interfaces[name] || []) {
+    if (iface.family === 'IPv4' && !iface.internal) {
+      localIP = iface.address;
+      break;
+    }
+  }
+  if (localIP !== 'localhost') break;
+}
+
 console.log(`[Server] WebSocket 服务运行在 ws://localhost:${PORT}`);
+console.log(`[Server] 局域网地址: ws://${localIP}:${PORT}`);
 console.log('[Server] 按 Ctrl+C 退出');
