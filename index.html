@@ -49,6 +49,9 @@
       top: 0; left: 0;
       z-index: 1;
     }
+    #game-canvas.narrow {
+      left: 0;
+    }
 
     /* ===== UI 层 ===== */
     #ui-layer {
@@ -64,7 +67,7 @@
     #hud-bar {
       position: absolute;
       top: 0; left: 0; right: 0;
-      height: 56px;
+      height: 56px; /* =LAYOUT.HUD_HEIGHT */
       background: linear-gradient(180deg, rgba(22,33,62,0.97) 0%, rgba(22,33,62,0.85) 100%);
       backdrop-filter: blur(10px);
       border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -145,7 +148,7 @@
       gap: 10px;
       flex-wrap: wrap;
       justify-content: center;
-      max-width: 800px;
+      max-width: 700px;
     }
     .action-btn {
       padding: 14px 32px;
@@ -193,6 +196,7 @@
       align-items: center;
       justify-content: center;
       background: radial-gradient(ellipse at center, rgba(22,33,62,0.5) 0%, rgba(10,12,20,0.9) 100%);
+      z-index: 30;
     }
     #menu-logo {
       font-size: 52px; font-weight: bold;
@@ -384,6 +388,79 @@
       z-index: 25;
     }
 
+    /* ===== 右侧仪表盘 ===== */
+    #dashboard {
+      position: absolute;
+      right: 0;
+      top: 56px;
+      width: 260px;
+      bottom: 0;
+      background: rgba(10,15,30,0.9);
+      border-left: 1px solid rgba(255,255,255,0.08);
+      padding: 12px;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+      z-index: 8;
+    }
+    #dashboard::-webkit-scrollbar { width: 3px; }
+    #dashboard::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+    .dash-section {
+      background: rgba(255,255,255,0.03);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .dash-title {
+      font-size: 11px;
+      color: #FFD700;
+      font-weight: bold;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .dash-stock-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .dash-stock-up { color: #2ECC71; }
+    .dash-stock-down { color: #E74C3C; }
+    .dash-cpi-bar {
+      height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      margin-top: 4px;
+      overflow: hidden;
+    }
+    .dash-cpi-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #2ECC71, #F39C12, #E74C3C);
+      border-radius: 2px;
+      transition: width 0.5s;
+    }
+    .dash-player-mini {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 2px 0;
+    }
+    .dash-player-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+    .dash-cycle-tag {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 8px;
+      display: inline-block;
+    }
+    .dash-cycle-boom { background: rgba(255,215,0,0.2); color: #FFD700; }
+    .dash-cycle-recession { background: rgba(52,152,219,0.2); color: #5DADE2; }
+    .dash-cycle-normal { background: rgba(46,204,113,0.2); color: #2ECC71; }
+
     /* ===== 快捷键提示栏 ===== */
     #shortcut-bar {
       position: absolute;
@@ -458,6 +535,14 @@
           <button class="menu-diff-btn" data-diff="HARD">困难</button>
         </div>
         <div id="menu-footer">v1.0 · TypeScript + Canvas · 10,000+ 行</div>
+      </div>
+
+      <!-- 右侧仪表盘 -->
+      <div id="dashboard">
+        <div class="dash-section" id="dash-economy"></div>
+        <div class="dash-section" id="dash-stocks"></div>
+        <div class="dash-section" id="dash-players"></div>
+        <div class="dash-section" id="dash-crisis"></div>
       </div>
 
       <!-- HUD 顶栏 -->

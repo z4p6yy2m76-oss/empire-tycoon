@@ -29,9 +29,9 @@ export class EventLogUI {
   constructor(el: HTMLElement) {
     this.el = el;
 
-    // 初始位置：右下角
+    // 初始位置：左下角（避开右侧仪表盘）
     this.el.style.position = 'absolute';
-    this.el.style.right = '12px';
+    this.el.style.left = '10px';
     this.el.style.bottom = '100px';
     this.el.style.width = '260px';
     this.el.style.maxHeight = 'none';

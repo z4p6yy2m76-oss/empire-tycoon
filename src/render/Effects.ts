@@ -127,25 +127,75 @@ export class Effects {
     }
   }
 
-  /** 破产爆炸 */
+  /** 破产爆炸（大型特效） */
   bankruptcyExplosion(x: number, y: number): void {
-    for (let i = 0; i < 30; i++) {
+    // 红色大爆炸
+    for (let i = 0; i < 60; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = 50 + Math.random() * 300;
+      const speed = 80 + Math.random() * 500;
       this.particles.push({
         x, y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 1 + Math.random() * 1.5,
+        life: 0.8 + Math.random() * 2,
         maxLife: 2.5,
-        size: 3 + Math.random() * 8,
-        color: '#E74C3C',
+        size: 3 + Math.random() * 12,
+        color: ['#E74C3C', '#C0392B', '#FF6B6B', '#FF0000', '#FFD700'][Math.floor(Math.random() * 5)],
         alpha: 1,
-        rotation: 0,
-        rotationSpeed: (Math.random() - 0.5) * 8,
-        gravity: 100,
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 10,
+        gravity: 80,
       });
     }
+    // 金色碎片
+    for (let i = 0; i < 20; i++) {
+      this.particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 300,
+        vy: -200 - Math.random() * 400,
+        life: 1.5 + Math.random(),
+        maxLife: 2.5,
+        size: 4 + Math.random() * 6,
+        color: '#FFD700',
+        alpha: 1,
+        rotation: 0,
+        rotationSpeed: (Math.random() - 0.5) * 5,
+        gravity: 200,
+      });
+    }
+  }
+
+  /** 建造动画 */
+  buildAnimation(x: number, y: number): void {
+    // 锤子敲击
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2;
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * 60,
+        vy: Math.sin(angle) * 60 - 30,
+        life: 0.5, maxLife: 0.5,
+        size: 4 + Math.random() * 4,
+        color: '#F39C12',
+        alpha: 1,
+        rotation: 0,
+        rotationSpeed: (Math.random() - 0.5) * 12,
+        gravity: 40,
+      });
+    }
+    // 🏗️
+    this.particles.push({
+      x, y,
+      vx: 0, vy: -60,
+      life: 1.2, maxLife: 1.2,
+      size: 24,
+      color: '#FFD700',
+      alpha: 1,
+      rotation: 0,
+      rotationSpeed: 0,
+      gravity: 0,
+      text: '🔨',
+    });
   }
 
   /** 层切换传送特效 */

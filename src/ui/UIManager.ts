@@ -1,14 +1,10 @@
-// ============================================================
-// UIManager.ts — UI 总管
-// 管理所有 HTML UI 模块的引用、生命周期、事件路由
-// ============================================================
-
 import { MainMenuUI } from './MainMenuUI';
 import { HUDUI } from './HUDUI';
 import { ActionPanel } from './ActionPanel';
 import { ModalUI } from './ModalUI';
 import { EventLogUI } from './EventLogUI';
 import { NotificationUI } from './NotificationUI';
+import { DashboardUI } from './DashboardUI';
 
 export class UIManager {
   mainMenu: MainMenuUI;
@@ -17,6 +13,7 @@ export class UIManager {
   modal: ModalUI;
   log: EventLogUI;
   notify: NotificationUI;
+  dashboard: DashboardUI;
 
   private root: HTMLElement;
   private shortcutBar: HTMLElement;
@@ -31,35 +28,31 @@ export class UIManager {
     this.modal = new ModalUI(this.root.querySelector('#modal-overlay')!, this.root.querySelector('#modal-content')!);
     this.log = new EventLogUI(this.root.querySelector('#event-log')!);
     this.notify = new NotificationUI(this.root.querySelector('#notification')!);
+    this.dashboard = new DashboardUI(this.root.querySelector('#dashboard')!);
   }
 
-  /** 切换到游戏内 UI（隐藏菜单，显示 HUD） */
   enterGame(): void {
     this.mainMenu.hide();
     this.hud.show();
     this.actions.show();
     this.log.show();
+    this.dashboard.show();
     this.shortcutBar.style.display = 'flex';
   }
 
-  /** 返回主菜单 */
   returnToMenu(): void {
     this.hud.hide();
     this.actions.hide();
     this.log.hide();
+    this.dashboard.hide();
     this.modal.hide();
     this.mainMenu.show();
     this.actions.clear();
     this.shortcutBar.style.display = 'none';
   }
 
-  /** 暂停状态 */
   setPaused(paused: boolean): void {
-    if (paused) {
-      this.actions.hide();
-    } else {
-      this.actions.show();
-    }
+    if (paused) { this.actions.hide(); } else { this.actions.show(); }
   }
 }
 

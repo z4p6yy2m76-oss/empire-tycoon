@@ -9,6 +9,11 @@ import type { Player } from '../entities/Player';
 import { state } from '../core/StateManager';
 import { Camera } from './Camera';
 import { Effects } from './Effects';
+import { computeLayout, type GameLayout } from './LayoutConfig';
+
+// 棋盘固有尺寸（与MapConfig一致）
+const BOARD_W = 1000;
+const BOARD_H = 720;
 
 const COLORS = {
   bg: '#1a1a2e',
@@ -36,6 +41,13 @@ export class Renderer {
   private mapLayers: MapLayerConfig[] = [];
   private currentLayerIndex: number = 0;
   private players: Player[] = [];
+  private propLevels: Map<number, number> = new Map();
+  private layout!: GameLayout; // 动态布局，resize时更新
+  // AI 气泡
+  private bubbles: Array<{ x: number; y: number; text: string; color: string; life: number }> = [];
+  // 经济周期视觉效果
+  economyCycle: string = 'NORMAL';
+  private cycleParticles: Array<{ x: number; y: number; vy: number; life: number; maxLife: number; size: number; color: string }> = [];
 
   private animProgress: number = 0;
   private animPath: number[] = [];
@@ -53,12 +65,24 @@ export class Renderer {
     this.ctx = ctx;
     this.camera = new Camera(ctx.canvas.width, ctx.canvas.height);
     this.effects = new Effects();
+    this.recalculateLayout();
   }
 
   setMapLayers(layers: MapLayerConfig[]): void { this.mapLayers = layers; }
   setPlayers(players: Player[]): void { this.players = players; }
+  setPropertyLevels(levels: Map<number, number>): void { this.propLevels = levels; }
   getCamera(): Camera { return this.camera; }
-  resize(w: number, h: number): void { this.camera.setCanvasSize(w, h); }
+  resize(w: number, h: number): void {
+    this.camera.setCanvasSize(w, h);
+    this.recalculateLayout();
+  }
+
+  /** 重新计算布局 */
+  recalculateLayout(): void {
+    this.layout = computeLayout(this.ctx.canvas.width, this.ctx.canvas.height);
+  }
+
+  getLayout(): GameLayout { return this.layout; }
 
   // ---- 骰子动画 ----
   startDiceRoll(finalValues: [number, number]): void {
@@ -66,10 +90,18 @@ export class Renderer {
     this.diceRolling = true;
     this.diceTimer = 0;
   }
+
+  /** 回合结束时清除骰子显示 */
+  hideDice(): void {
+    this.diceRolling = false;
+    this.diceResultShow = false;
+    this.diceDisplay = [0, 0];
+  }
   private diceResultShow: boolean = false;
   private diceResultTimer: number = 0;
 
-  private updateDiceAnim(dt: number): void {
+  /** 每帧更新骰子动画（必须独立于移动动画，确保始终运行） */
+  updateDiceAnim(dt: number): void {
     if (this.diceRolling) {
       this.diceTimer += dt;
       if (this.diceTimer >= this.diceDuration) {
@@ -84,13 +116,9 @@ export class Renderer {
         }
       }
     }
-    // 结果展示持续 2 秒
+    // 结果持续展示直到回合结束（由 hideDice 清除）
     if (this.diceResultShow) {
       this.diceResultTimer += dt;
-      if (this.diceResultTimer > 2.5) {
-        this.diceResultShow = false;
-        this.diceDisplay = [0, 0]; // 隐藏
-      }
     }
   }
 
@@ -103,7 +131,6 @@ export class Renderer {
   get isAnimating(): boolean { return this.animActive; }
   updateAnimProgress(dt: number): boolean {
     const speed = this.animSpeed;
-    this.updateDiceAnim(dt);
     if (!this.animActive) return false;
     this.animProgress += dt * speed * this.animPath.length;
     if (this.animProgress >= 1) {
@@ -114,8 +141,11 @@ export class Renderer {
     return false;
   }
 
-  // ---- 主渲染 ----
-  render(dt: number): void {
+  // 基础缩放比（缓存）
+  private baseScale: number = 1;
+
+  // ---- 主渲染（一体化矩阵变换 + Camera交互） ----
+  render(_dt: number): void {
     const ctx = this.ctx;
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
@@ -124,47 +154,79 @@ export class Renderer {
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, w, h);
 
+    const board = this.layout.board;
     this.camera.update();
-    this.camera.apply(ctx);
 
-    this.renderLayerBackground();
+    // === 一体化矩阵变换 ===
+    ctx.save();
+    // 层叠: 基础居中 + 用户拖拽偏移 + 用户缩放
+    const cx = board.x + board.width / 2 + this.camera.x;
+    const cy = board.y + board.height / 2 + this.camera.y;
+    ctx.translate(cx, cy);
+    this.baseScale = Math.min(board.width / BOARD_W, board.height / BOARD_H) * 0.92;
+    const sc = this.baseScale * this.camera.scale;
+    ctx.scale(sc, sc);
+
+    this.renderBoardBg();
     this.renderGrid();
     this.renderMap();
     this.renderPieces();
-    if (this.animActive && this.animPath.length > 1) {
-      this.renderAnimPiece();
-    }
-    this.effects.render(ctx, { x: this.camera.x, y: this.camera.y, scale: this.camera.scale });
+    if (this.animActive && this.animPath.length > 1) this.renderAnimPiece();
+    this.effects.render(ctx, { x: 0, y: 0, scale: 1 });
+    this.renderWatermark();
+    this.renderDice(w, h);
+    this.renderBubbles();
+    this.renderCrisisOverlay();
+    ctx.restore();
+    // === 一体化变换结束 ===
+
     this.renderLayerLabels();
-
-    // 其他层玩家指示器
-    this.renderOffLayerPlayers();
-
-    this.camera.restore(ctx);
-
-    // 骰子（屏幕坐标，不随摄像机缩放）
-    this.renderDice(ctx.canvas.width, ctx.canvas.height);
+    this.renderCycleParticles();
+    this.renderOffLayerPlayersScreen();
   }
 
-  // ---- 层背景（矩形棋盘底纹） ----
-  private renderLayerBackground(): void {
+  // ---- 棋盘背景矩形（本地坐标，原点=棋盘中心） ----
+  private renderBoardBg(): void {
     const ctx = this.ctx;
-    // 棋盘矩形区域
-    const bx = 130, by = 100, bw = 1140, bh = 700;
+    const hw = BOARD_W / 2, hh = BOARD_H / 2;
     ctx.fillStyle = COLORS.layerColors[this.currentLayerIndex] + '12';
-    this.roundRect(bx, by, bw, bh, 16);
+    this.roundRect(-hw, -hh, BOARD_W, BOARD_H, 16);
     ctx.fill();
     ctx.strokeStyle = COLORS.layerColors[this.currentLayerIndex] + '20';
     ctx.lineWidth = 2;
-    this.roundRect(bx, by, bw, bh, 16);
+    this.roundRect(-hw, -hh, BOARD_W, BOARD_H, 16);
     ctx.stroke();
+  }
 
-    // 中心文字
+  // ---- 水印（本地坐标，棋盘中心） ----
+  private renderWatermark(): void {
+    const ctx = this.ctx;
     ctx.fillStyle = COLORS.layerColors[this.currentLayerIndex] + '15';
-    ctx.font = 'bold 48px "Microsoft YaHei"';
+    ctx.font = 'bold 50px "Microsoft YaHei"';
     ctx.textAlign = 'center';
-    ctx.fillText('EMPIRE', 700, 400);
-    ctx.fillText('TYCOON', 700, 458);
+    ctx.fillText('EMPIRE', 0, -30);
+    ctx.fillText('TYCOON', 0, 30);
+  }
+
+  // ---- 其他层玩家指示器（屏幕空间） ----
+  private renderOffLayerPlayersScreen(): void {
+    const ctx = this.ctx;
+    const offPlayers = this.players.filter(p => !p.bankrupt && p.currentLayer !== this.currentLayerIndex);
+    if (offPlayers.length === 0) return;
+    const board = this.layout.board;
+    const bx = board.x + board.width / 2 - 250;
+    const by = board.y + board.height - 30;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    this.roundRect(bx, by, 500, 26, 13);
+    ctx.fill();
+    ctx.fillStyle = '#AAA';
+    ctx.font = '11px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    const names = offPlayers.map(p => {
+      const ln = this.mapLayers[p.currentLayer]?.name ?? '?';
+      return `${p.name}(${ln})`;
+    }).join(' · ');
+    ctx.fillText(`其他层: ${names}`, bx + 250, by + 18);
   }
 
   // ---- 网格路径 ----
@@ -199,7 +261,7 @@ export class Renderer {
   private renderTile(tile: MapTileConfig): void {
     const ctx = this.ctx;
     const { x, y } = tile;
-    const size = 48, half = size / 2, radius = 8;
+    const size = 54, half = size / 2, radius = 9;
 
     // 阴影
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -233,10 +295,11 @@ export class Renderer {
     ctx.font = 'bold 9px "Microsoft YaHei"';
     ctx.fillText(tile.name.length > 3 ? tile.name.slice(0, 3) + '..' : tile.name, x, y + 14);
 
-    // 地产已购标记
+    // 地产已购标记 + 升级房屋
     if (tile.type === TileType.PROPERTY && tile.property) {
       const owner = this.players.find(p => p.ownedTiles.has(tile.id));
       if (owner) {
+        // 业主色点
         ctx.fillStyle = owner.color;
         ctx.beginPath();
         ctx.arc(x + half - 7, y - half + 7, 5, 0, Math.PI * 2);
@@ -244,6 +307,19 @@ export class Renderer {
         ctx.strokeStyle = '#FFFFFF';
         ctx.lineWidth = 1;
         ctx.stroke();
+
+        // 升级标记
+        const lv = this.propLevels.get(tile.id) ?? 0;
+        ctx.fillStyle = '#FFD700';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        if (lv >= 3) {
+          ctx.fillText('🏨', x, y - half - 4);
+        } else if (lv === 2) {
+          ctx.fillText('🏠🏠', x, y - half - 4);
+        } else if (lv === 1) {
+          ctx.fillText('🏠', x, y - half - 4);
+        }
       }
     }
   }
@@ -341,18 +417,21 @@ export class Renderer {
     this.renderPiece(ax, ay, player, true);
   }
 
+  // 屏幕空间层标签
   private renderLayerLabels(): void {
     const ctx = this.ctx;
+    const board = this.layout.board;
+    const bcx = board.x + board.width / 2;
     ctx.fillStyle = COLORS.layerColors[this.currentLayerIndex] + '80';
-    ctx.font = 'bold 14px "Microsoft YaHei"';
+    ctx.font = 'bold 13px "Microsoft YaHei"';
     ctx.textAlign = 'center';
     const layer = this.mapLayers[this.currentLayerIndex];
     if (!layer) return;
-    ctx.fillText(layer.name, 700, 24);
+    ctx.fillText(layer.name, bcx, board.y - 4);
     ctx.font = '10px "Microsoft YaHei"';
-    ctx.fillStyle = '#AAAAAA';
+    ctx.fillStyle = '#AAA';
     const labels = this.mapLayers.map((l, i) => `${i === this.currentLayerIndex ? '▶ ' : ''}${l.name}`);
-    ctx.fillText(labels.join('  |  '), 700, 40);
+    ctx.fillText(labels.join('  |  '), bcx, board.y + 10);
   }
 
   // ---- 辅助 ----
@@ -428,71 +507,123 @@ export class Renderer {
     return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
   }
 
+  /** 显示 AI 气泡 */
+  showBubble(x: number, y: number, text: string, color: string = '#FFD700'): void {
+    this.bubbles.push({ x, y: y - 40, text, color, life: 2.5 });
+  }
+
+  private renderBubbles(): void {
+    const ctx = this.ctx;
+    for (let i = this.bubbles.length - 1; i >= 0; i--) {
+      const b = this.bubbles[i];
+      b.life -= 0.016;
+      if (b.life <= 0) { this.bubbles.splice(i, 1); continue; }
+      const alpha = Math.min(1, b.life);
+      const by = b.y - (2.5 - b.life) * 10; // float up
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = 'rgba(0,0,0,0.8)';
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 1.5;
+      const w = ctx.measureText(b.text).width + 20;
+      const h = 24;
+      this.roundRect(b.x - w / 2, by - h, w, h, 10);
+      ctx.fill();
+      this.roundRect(b.x - w / 2, by - h, w, h, 10);
+      ctx.stroke();
+      ctx.fillStyle = '#FFF';
+      ctx.font = 'bold 11px "Microsoft YaHei"';
+      ctx.textAlign = 'center';
+      ctx.fillText(b.text, b.x, by - h / 2 + 5);
+      ctx.restore();
+    }
+  }
+
+  /** 渲染经济周期粒子 */
+  private renderCycleParticles(): void {
+    const ctx = this.ctx;
+    for (let i = this.cycleParticles.length - 1; i >= 0; i--) {
+      const p = this.cycleParticles[i];
+      p.life -= 0.016;
+      p.y += p.vy * 0.016;
+      if (p.life <= 0) { this.cycleParticles.splice(i, 1); continue; }
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.life / p.maxLife * 0.3;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** 更新经济周期粒子（由 update 调用）*/
+  updateCycleParticles(canvasW: number, canvasH: number): void {
+    if (this.economyCycle === 'BOOM') {
+      if (Math.random() < 0.3) this.cycleParticles.push({
+        x: Math.random() * canvasW, y: canvasH + 10,
+        vy: -40 - Math.random() * 60,
+        life: 3 + Math.random() * 4, maxLife: 7,
+        size: 1 + Math.random() * 2, color: '#FFD700'
+      });
+    } else if (this.economyCycle === 'RECESSION') {
+      if (Math.random() < 0.5) this.cycleParticles.push({
+        x: Math.random() * canvasW, y: -10,
+        vy: 80 + Math.random() * 120,
+        life: 2 + Math.random() * 3, maxLife: 5,
+        size: 0.5 + Math.random() * 1.5, color: '#5DADE2'
+      });
+    }
+  }
+
+  // 灾变数据
+  crisisText: string = '';
+  crisisCountdown: number = 0;
+
+  /** 设置灾变展示 */
+  setCrisis(text: string, countdown: number): void {
+    this.crisisText = text;
+    this.crisisCountdown = countdown;
+  }
+
+  /** 棋盘中心灾变倒计时（本地坐标） */
+  private renderCrisisOverlay(): void {
+    if (!this.crisisText || this.crisisCountdown <= 0) return;
+    const ctx = this.ctx;
+    const x = 0;
+    const y = BOARD_H / 2 - 90;
+    const w = 420, h = 38;
+
+    ctx.fillStyle = 'rgba(231,76,60,0.85)';
+    this.roundRect(x - w / 2, y, w, h, 19);
+    ctx.fill();
+    ctx.strokeStyle = '#FF6B6B';
+    ctx.lineWidth = 1.5;
+    this.roundRect(x - w / 2, y, w, h, 19);
+    ctx.stroke();
+
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 13px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(`⚠ ${this.crisisText}  [${this.crisisCountdown}回合]`, x, y + h / 2 + 5);
+  }
+
   switchLayer(index: number): void {
     this.currentLayerIndex = Math.max(0, Math.min(this.mapLayers.length - 1, index));
   }
 
   getCurrentLayer(): number { return this.currentLayerIndex; }
 
-  /** 渲染其他层玩家位置指示器 */
-  private renderOffLayerPlayers(): void {
-    const ctx = this.ctx;
-    const offLayerPlayers = this.players.filter(p => !p.bankrupt && p.currentLayer !== this.currentLayerIndex);
-    if (offLayerPlayers.length === 0) return;
-
-    // 在中心区域底部显示提示
-    const bx = 380, by = 560, bw = 640, bh = 36;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    this.roundRect(bx, by, bw, bh, 18);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 1;
-    this.roundRect(bx, by, bw, bh, 18);
-    ctx.stroke();
-
-    ctx.fillStyle = '#AAA';
-    ctx.font = '12px "Microsoft YaHei"';
-    ctx.textAlign = 'center';
-    const names = offLayerPlayers.map(p => {
-      const layerName = this.mapLayers[p.currentLayer]?.name ?? '?';
-      return `${p.name} (${layerName})`;
-    }).join('  ·  ');
-    ctx.fillText(`其他层: ${names}`, bx + bw / 2, by + bh / 2 + 5);
-
-    // 在跳转点标记
-    const layer = this.mapLayers[this.currentLayerIndex];
-    if (!layer) return;
-    for (const tile of layer.tiles) {
-      if (tile.type === TileType.SUBWAY) {
-        const hasPlayerThere = offLayerPlayers.some(p => {
-          return true; // all off-layer players are "there"
-        });
-        if (hasPlayerThere) {
-          ctx.fillStyle = '#FFD700';
-          ctx.beginPath();
-          ctx.arc(tile.x, tile.y - 30, 5, 0, Math.PI * 2);
-          ctx.fill();
-          // pulse
-          const pulse = Math.sin(Date.now() / 500) * 0.5 + 0.5;
-          ctx.fillStyle = `rgba(255,215,0,${0.15 + pulse * 0.2})`;
-          ctx.beginPath();
-          ctx.arc(tile.x, tile.y - 30, 9 + pulse * 4, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-    }
-  }
-
-  /** 渲染骰子（屏幕中央，roll 时放大 + 不在 roll 时缩小放角落） */
-  renderDice(canvasW: number, canvasH: number): void {
+  /** 渲染骰子（棋盘本地坐标，底部中心） */
+  renderDice(_w: number, _h: number): void {
     if (!this.diceRolling && this.diceDisplay[0] === 0) return;
     const ctx = this.ctx;
     const rolling = this.diceRolling;
     const size = rolling ? 80 : 42;
     const gap = rolling ? 20 : 8;
     const totalW = size * 2 + gap;
-    const x = rolling ? canvasW / 2 - totalW / 2 : canvasW - totalW - 20;
-    const y = rolling ? canvasH / 2 - size / 2 - 30 : 76;
+    // 棋盘本地坐标：正中央
+    const x = -totalW / 2;
+    const y = -size / 2;
 
     const [v1, v2] = this.diceDisplay;
 

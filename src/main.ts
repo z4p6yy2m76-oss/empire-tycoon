@@ -48,6 +48,9 @@ function fitCanvas(): void {
   wrapper.style.width = maxW + 'px';
   wrapper.style.height = maxH + 'px';
 }
+
+function narrowCanvasForDashboard(): void { /* 不再缩窄，仪表盘覆盖 */ }
+function fullWidthCanvas(): void { /* 不再缩窄 */ }
 fitCanvas();
 
 const engine = new GameEngine(canvas);
@@ -70,11 +73,111 @@ let network: NetworkClient | null = null;
 const aiManagers = new Map<string, AIManager>();
 let gameOverTriggered = false;
 let tileProcessed = false;
+let wasDoubles = false; // 当前回合掷出对子，触发额外回合
 let gameSpeed: 1 | 2 | 3 = 1; // 1=正常 2=快速 3=瞬间
 
 // 全局地产所有权映射（因为 findTile 每次创建新对象，不能靠 tile.ownerId）
 const propertyOwners = new Map<number, string>(); // tileId → playerId
 const propertyLevels = new Map<number, number>(); // tileId → 升级等级
+// 层灾变状态
+const layerCrisis: Map<number, { type: string; remaining: number }> = new Map();
+
+// ---- 垂直垄断检测 ----
+function getVerticalMonopolyBonus(player: Player, tileId: number): number {
+  const cfg = findTileConfig(tileId);
+  if (!cfg) return 0;
+  const pos = cfg.position;
+  // 检查同位置是否有玩家在三层的地产
+  let owned = 0;
+  for (const lId of [0, 1, 2]) {
+    const tl = mapLayers[lId]?.tiles[pos];
+    if (tl && propertyOwners.get(tl.id) === player.id) owned++;
+  }
+  return owned >= 3 ? 0.5 : (owned >= 2 ? 0.25 : 0); // 3层=50%, 2层=25%
+}
+
+// ---- AI 性格漂移 ----
+function updateAIMentalDrift(): void {
+  for (const [id, ai] of aiManagers) {
+    const p = state.getPlayer(id);
+    if (!p || p.bankrupt) continue;
+    // 根据资产状况和经济周期动态调整
+    const cashRatio = p.cash / Math.max(1, p.totalAssets);
+    if (cashRatio < 0.1) {
+      ai.setPersonality('gambler'); // 穷途末路变赌徒
+    } else if (renderer.economyCycle === 'BOOM') {
+      if (Math.random() < 0.3) ai.setPersonality('aggressive');
+    }
+  }
+}
+
+// ---- 层灾变检测 ----
+/** 当前层过路费倍率（受灾变影响） */
+function getCrisisRentMultiplier(layer: number): number {
+  // 全局效果
+  const global = layerCrisis.get(-1);
+  let mult = 1.0;
+  if (global && global.remaining > 0) {
+    if (global.type.includes('节日')) mult *= 2.0;
+  }
+  // 层效果
+  const crisis = layerCrisis.get(layer);
+  if (!crisis || crisis.remaining <= 0) return mult;
+  if (crisis.type.includes('高温')) mult *= 0.5;
+  if (crisis.type.includes('暴雨')) return 0; // 过路费归零
+  if (crisis.type.includes('雾霾')) mult *= 1.5;
+  if (crisis.type.includes('疫情')) return 0; // 禁止通行
+  return mult;
+}
+
+/** 灾变下能否收租 */
+function canCollectRentOnLayer(layer: number): boolean {
+  const crisis = layerCrisis.get(layer);
+  if (!crisis || crisis.remaining <= 0) return true;
+  if (crisis.type.includes('暴雨') || crisis.type.includes('疫情')) return false;
+  return true;
+}
+
+/** 灾变下维护费倍率 */
+function getCrisisMaintenanceMultiplier(layer: number): number {
+  const crisis = layerCrisis.get(layer);
+  if (!crisis || crisis.remaining <= 0) return 1.0;
+  if (crisis.type.includes('雷暴')) return 2.0;
+  return 1.0;
+}
+
+function tickLayerCrisis(): void {
+  for (const [layer, crisis] of layerCrisis) {
+    crisis.remaining--;
+    if (crisis.remaining <= 0) layerCrisis.delete(layer);
+  }
+}
+
+function triggerRandomCrisis(): void {
+  if (Math.random() > 0.12) return; // 12%概率触发
+  const crises = [
+    { type: '🌊 特大暴雨', desc: '地下层淹水，过路费归零3回合', layer: 1, effect: 'rent_zero' },
+    { type: '🌫️ 严重雾霾', desc: '天空层能见度低，过路费×1.5', layer: 2, effect: 'rent_boost' },
+    { type: '🔥 高温预警', desc: '地面层限电，过路费减半3回合', layer: 0, effect: 'rent_half' },
+    { type: '⚡ 雷暴天气', desc: '随机一层所有地产维护费翻倍2回合', layer: Math.floor(Math.random() * 3), effect: 'maint_double' },
+    { type: '📉 股灾恐慌', desc: '所有股票跌停1回合，禁止交易', layer: -1, effect: 'stock_freeze' },
+    { type: '🏦 央行加息', desc: '所有贷款利率翻倍2回合', layer: -1, effect: 'loan_hike' },
+    { type: '💸 全民退税', desc: '所有玩家获得 $2000', layer: -1, effect: 'all_bonus' },
+    { type: '🦠 疫情封控', desc: '随机一层禁止通行2回合(无法停留)', layer: Math.floor(Math.random() * 3), effect: 'no_stop' },
+    { type: '🎉 节日消费潮', desc: '全图过路费×2，持续2回合', layer: -1, effect: 'rent_double_all' },
+    { type: '❄️ 寒流来袭', desc: '随机一层移动步数-2，持续3回合', layer: Math.floor(Math.random() * 3), effect: 'slow_move' },
+  ];
+  const crisis = crises[Math.floor(Math.random() * crises.length)];
+  if (crisis.layer >= 0) {
+    layerCrisis.set(crisis.layer, { type: crisis.type, remaining: 2 + Math.floor(Math.random() * 2) });
+  }
+  // 全局效果存到 layer -1
+  if (crisis.layer === -1) {
+    layerCrisis.set(-1, { type: crisis.type, remaining: 2 });
+  }
+  ui.log.warning(`${crisis.desc}`);
+  ui.notify.show(crisis.type, 2000, '#E74C3C');
+}
 
 const ctx = canvas.getContext('2d')!;
 const renderer = new Renderer(ctx);
@@ -84,6 +187,8 @@ renderer.setMapLayers(mapLayers);
 engine.setUpdate((dt: number) => {
   input.endFrame();
   renderer.effects.update(dt);
+  renderer.updateDiceAnim(dt); // 每帧更新骰子
+  renderer.updateCycleParticles(canvas.width, canvas.height);
   if (renderer.isAnimating) {
     const done = renderer.updateAnimProgress(dt);
     if (done) {
@@ -101,20 +206,57 @@ engine.setRender((_ctx, dt) => {
   renderer.render(dt);
 });
 
-// ---- 输入（点击不再自动掷骰，必须点按钮） ----
+// ---- 输入：拖拽平移棋盘，滚轮缩放 ----
+input.onDrag = (dx: number, dy: number) => {
+  renderer.camera.pan(dx, dy);
+};
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  renderer.camera.zoom(e.deltaY, e.offsetX, e.offsetY);
+}, { passive: false });
+// 双击重置视角
+canvas.addEventListener('dblclick', () => {
+  renderer.camera.reset();
+});
+
 input.onClick = () => {
-  // 只处理 UI 层的点击（由 DOM 事件处理）
+  // UI 层点击由 DOM 事件处理
 };
 
 // 键盘
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (state.phase === GamePhase.MENU) return;
-    ui.modal.show('暂停', '游戏已暂停', [
+    // 自动测试模式：停止并返回菜单
+    if (debugger_.isRunning()) {
+      debugger_.stop();
+      if (autoPlayTimer) clearTimeout(autoPlayTimer);
+      fullWidthCanvas();
+      ui.returnToMenu();
+      ui.notify.show('已停止自动测试', 1500, '#FFD700');
+      return;
+    }
+    // 人类接管AI
+    const cp = state.getCurrentPlayer();
+    const btns: any[] = [
       { text: '继续', cssClass: 'btn-end-turn', onClick: () => ui.modal.hide() },
       { text: '存档', cssClass: 'btn-auction', onClick: () => { state.save(); ui.modal.hide(); } },
-      { text: '返回菜单', cssClass: 'btn-danger', onClick: () => { state.reset(); ui.returnToMenu(); ui.modal.hide(); } },
-    ]);
+      { text: '返回菜单', cssClass: 'btn-danger', onClick: () => { state.reset(); fullWidthCanvas(); ui.returnToMenu(); ui.modal.hide(); } },
+    ];
+    if (cp && !cp.isHuman && !cp.bankrupt) {
+      btns.splice(1, 0, {
+        text: `👤 接管 ${cp.name}`,
+        cssClass: 'btn-buy',
+        onClick: () => {
+          cp.isHuman = true;
+          aiManagers.delete(cp.id);
+          ui.modal.hide();
+          ui.actions.setButtons([{ id: 'roll_dice', text: '🎲 掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+          ui.notify.show(`接管 ${cp.name}`, 1500, '#2ECC71');
+        }
+      });
+    }
+    ui.modal.show('暂停', '游戏已暂停', btns);
   }
   if (e.key === 'r' && state.phase === GamePhase.ROLLING) handleDiceRoll();
   if (e.key === '1') { renderer.switchLayer(0); refreshHUD(); }
@@ -221,7 +363,9 @@ bus.on('bankruptcy.start', (data) => {
 
 bus.on('bankruptcy.complete', (data) => {
   const p = state.getPlayer(data.playerId);
+  renderer.effects.bankruptcyExplosion(700, 450);
   ui.log.expense(`${p?.name ?? data.playerId} 破产!`);
+  ui.notify.bankruptcy(p?.name ?? data.playerId);
   refreshHUD();
 });
 
@@ -233,7 +377,7 @@ bus.on('game.over', (data) => {
     winner.name, winner.color, winner.netWorth, winner.cash, winner.ownedTiles.size,
     state.turnNumber,
     () => { ui.modal.hide(); startGame(); },
-    () => { ui.modal.hide(); ui.returnToMenu(); },
+    () => { ui.modal.hide(); fullWidthCanvas(); ui.returnToMenu(); },
   );
 });
 
@@ -260,6 +404,25 @@ function refreshHUD(): void {
   ui.hud.refresh(
     [...state.players.values()],
     mapLayers[renderer.getCurrentLayer()]?.name ?? '未知层',
+  );
+  renderer.setPropertyLevels(propertyLevels);
+  // 刷新右侧仪表盘
+  // 显示灾变到棋盘中央
+  const activeCrises: string[] = [];
+  let maxCountdown = 0;
+  for (const [ly, cr] of layerCrisis) {
+    if (cr.remaining > 0) {
+      activeCrises.push(`${mapLayers[ly]?.name ?? (ly === -1 ? '全局' : '?')}: ${cr.type}`);
+      maxCountdown = Math.max(maxCountdown, cr.remaining);
+    }
+  }
+  renderer.setCrisis(activeCrises.join(' | '), maxCountdown);
+  const crisisText = activeCrises.length > 0 ? activeCrises.join(' | ') : null;
+  ui.dashboard.refresh(
+    [...state.players.values()],
+    stockSys.getAllStocks(),
+    economySys.getEconomyCycle(),
+    crisisText,
   );
 }
 
@@ -290,6 +453,7 @@ function handleDiceRoll(): void {
   const result = diceSys.roll();
   state.currentDice = result.values;
   renderer.startDiceRoll(result.values);
+  wasDoubles = result.isDoubles;
 
   if (diceSys.checkDoublesJail()) {
     player.inJail = true; player.jailTurns = 3; state.doublesCount = 0;
@@ -297,7 +461,13 @@ function handleDiceRoll(): void {
     turnSys.endTurn(player); afterTurn(); return;
   }
 
-  const steps = diceSys.getSteps(result.values);
+  let steps = diceSys.getSteps(result.values);
+  // 寒流减速
+  const slowCrisis = layerCrisis.get(player.currentLayer);
+  if (slowCrisis && slowCrisis.remaining > 0 && slowCrisis.type.includes('寒流')) {
+    steps = Math.max(1, steps - 2);
+    ui.log.system(`${player.name} 受寒流影响，步数-2`);
+  }
   const path = moveSys.buildForwardPath(player, steps);
   const dest = path[path.length - 1];
   const prevId = player.currentTileId;
@@ -325,6 +495,15 @@ function handleDiceRoll(): void {
     return;
   }
 
+  // 联机模式：发送移动数据
+  if (network && state.settings.mode === GameMode.ONLINE) {
+    network.send({
+      type: 'PLAYER_MOVE' as any,
+      timestamp: Date.now(),
+      payload: { playerId: player.id, path, steps },
+    });
+  }
+
   renderer.animSpeed = gameSpeed === 2 ? 0.5 : 0.15;
   renderer.startMoveAnimation(path);
   turnSys.startMove(player, steps);
@@ -339,37 +518,93 @@ function handleTileTrigger(): void {
   const tile = findTile(player.currentTileId);
   if (!tile) { turnSys.endTurn(player); afterTurn(); return; }
 
-  ui.log.system(`${player.name} 停在: ${tile.name}`);
+  ui.log.add(`停在: ${tile.name}`, 'system', player.name, player.color);
   refreshHUD();
 
+  // === 强制效果（所有玩家都执行） ===
+  if (tile instanceof TaxTile) {
+    const taxAmount = (tile as any).fixedAmount > 0 ? (tile as any).fixedAmount : Math.floor(player.totalAssets * ((tile as any).taxRate ?? 0.15));
+    const paid = player.payAmount(taxAmount);
+    if (!paid) {
+      // 现金不够从存款扣
+      player.withdraw(Math.min(player.bankSavings, taxAmount - player.cash));
+      player.payAmount(taxAmount);
+    }
+    ui.log.expense(`${player.name} 缴税 $${taxAmount}`);
+    renderer.effects.moneyFly(tile.x, tile.y, -taxAmount, '#E67E22');
+  }
+  if (tile instanceof StartTile) economySys.paySalary(player, 1500);
+  if (tile instanceof JailTile && !player.inJail) {
+    player.inJail = true; player.jailTurns = 3;
+    bus.emit('jail.enter', { playerId: player.id, turns: 3 });
+  }
+  // 地铁站 → 传送（所有人）
+  if (tile instanceof SubwayTile) {
+    const tl = (tile as any).targetLayer as number;
+    const tp = (tile as any).targetPosition as number;
+    const tld = mapLayers[tl];
+    if (tld && tp < tld.tiles.length) {
+      player.currentLayer = tl;
+      player.currentTileId = tld.tiles[tp].id;
+      renderer.switchLayer(tl);
+      ui.log.add(`传送至 ${tld.name}`, 'system', player.name, player.color);
+    }
+  }
+  // 过路费（所有人）
+  const ownerId = propertyOwners.get(tile.id);
+  if (tile instanceof PropertyTile && ownerId && ownerId !== player.id) {
+    const lv = propertyLevels.get(tile.id) ?? 0;
+    const baseRent = tile.rentTable[Math.min(lv, tile.rentTable.length - 1)][0];
+    const owner = state.getPlayer(ownerId);
+    const vBonus = owner ? getVerticalMonopolyBonus(owner, tile.id) : 0;
+    const crisisMult = getCrisisRentMultiplier(player.currentLayer);
+    const totalRent = Math.floor(baseRent * state.economy.cpiMultiplier * (1 + vBonus) * crisisMult);
+    if (player.payAmount(totalRent)) {
+      if (owner) owner.addMoney(totalRent, `过路费: ${tile.name}`);
+      const bonusTag = vBonus > 0 ? ` [垂直垄断+${Math.round(vBonus*100)}%]` : '';
+      ui.log.expense(`${player.name} 付过路费 $${totalRent} → ${owner?.name ?? '?'}${bonusTag}`);
+      renderer.effects.moneyFly(tile.x, tile.y, -totalRent, '#E74C3C');
+      refreshHUD();
+    }
+  }
+
+  // === AI 自动处理 ===
   if (!player.isHuman) { aiHandleTile(player, tile); return; }
 
   ui.actions.clear();
-  const bw = 170, hw = 42;
 
-  const ownerId = propertyOwners.get(tile.id);
-  if (tile instanceof PropertyTile && !ownerId && tile.getPrice() > 0) {
-    ui.actions.addButton({ id: 'buy', text: `购买 $${tile.getPrice()}`, cssClass: 'btn-buy', disabled: !player.canAfford(tile.getPrice()), onClick: () => {
+  const ownerId2 = propertyOwners.get(tile.id);
+  if (tile instanceof PropertyTile && !ownerId2 && tile.getPrice() > 0) {
+    // 股票-地产绑定：持有相关股票享折扣
+    let buyPrice = tile.getPrice();
+    const ownedStocks = player.stockPortfolio.filter(s => s.type === 'long');
+    if (ownedStocks.length > 0) {
+      buyPrice = Math.floor(buyPrice * 0.85); // 15%折扣
+    }
+    ui.actions.addButton({ id: 'buy', text: `购买 $${buyPrice}${buyPrice < tile.getPrice() ? ' (股东85折)' : ''}`, cssClass: 'btn-buy', disabled: !player.canAfford(buyPrice), onClick: () => {
       propertyOwners.set(tile.id, player.id);
       propertyLevels.set(tile.id, 0);
-      player.addProperty(tile.id, tile.getPrice());
-      player.cash -= tile.getPrice();
-      ui.log.system(`购入 ${tile.name}，-$ ${tile.getPrice()}`);
+      player.addProperty(tile.id, buyPrice);
+      player.cash -= buyPrice;
+      renderer.effects.buildAnimation(tile.x, tile.y);
+      renderer.setPropertyLevels(propertyLevels);
+      ui.log.add(`购入 ${tile.name} -$${buyPrice}`, 'income', player.name, player.color);
       refreshHUD();
       turnSys.endTurn(player); afterTurn();
     }});
     ui.actions.addButton({ id: 'auction', text: '触发拍卖', cssClass: 'btn-auction', disabled: false, onClick: () => { turnSys.endTurn(player); afterTurn(); } });
   }
 
-  if (tile instanceof PropertyTile && ownerId === player.id) {
+  if (tile instanceof PropertyTile && ownerId2 === player.id) {
     const lv = propertyLevels.get(tile.id) ?? 0;
     if (lv < 3) {
       const cost = tile.upgradeCosts[lv] ?? 0;
       ui.actions.addButton({ id: 'upgrade', text: `升级 Lv${lv}→${lv+1} $${cost}`, cssClass: 'btn-upgrade', disabled: !player.canAfford(cost), onClick: () => {
         player.cash -= cost;
         propertyLevels.set(tile.id, lv + 1);
-        ui.log.system(`${tile.name} 升级至 Lv${lv + 1}，-$ ${cost}`);
-        renderer.effects.upgradeSparkle(tile.x, tile.y);
+        renderer.effects.buildAnimation(tile.x, tile.y);
+        renderer.setPropertyLevels(propertyLevels);
+        ui.log.add(`${tile.name} 升级 Lv${lv+1} -$${cost}`, 'system', player.name, player.color);
         refreshHUD();
         turnSys.endTurn(player); afterTurn();
       }});
@@ -378,18 +613,22 @@ function handleTileTrigger(): void {
 
   if (tile instanceof PropertyTile && ownerId && ownerId !== player.id) {
     const lv = propertyLevels.get(tile.id) ?? 0;
-    const rent = tile.rentTable[Math.min(lv, tile.rentTable.length - 1)][0];
-    const cpiRent = Math.floor(rent * state.economy.cpiMultiplier);
-    if (player.payAmount(cpiRent)) {
-      const owner = state.getPlayer(ownerId);
-      if (owner) owner.addMoney(cpiRent, `过路费: ${tile.name}`);
-      ui.log.expense(`${player.name} 付过路费 $${cpiRent} → ${owner?.name ?? '?'}`);
-      renderer.effects.moneyFly(tile.x, tile.y, -cpiRent, '#E74C3C');
+    const baseRent = tile.rentTable[Math.min(lv, tile.rentTable.length - 1)][0];
+    const owner = state.getPlayer(ownerId);
+    const vBonus = owner ? getVerticalMonopolyBonus(owner, tile.id) : 0;
+    const crisisMult = getCrisisRentMultiplier(player.currentLayer);
+    const totalRent = Math.floor(baseRent * state.economy.cpiMultiplier * (1 + vBonus) * crisisMult);
+    if (player.payAmount(totalRent)) {
+      if (owner) owner.addMoney(totalRent, `过路费: ${tile.name}`);
+      const bonusTag = vBonus > 0 ? ` [垂直垄断+${Math.round(vBonus*100)}%]` : '';
+      ui.log.expense(`${player.name} 付过路费 $${totalRent} → ${owner?.name ?? '?'}${bonusTag}`);
+      renderer.effects.moneyFly(tile.x, tile.y, -totalRent, '#E74C3C');
+      if (!player.isHuman && owner?.isHuman && owner.isHuman) {
+        renderer.showBubble(tile.x, tile.y, `$${totalRent}，谢谢老板!`, '#FFD700');
+      }
       refreshHUD();
     }
   }
-
-  if (tile instanceof StartTile) economySys.paySalary(player, 1500); // 降为1500
 
   if (tile instanceof SubwayTile) {
     const targetLayer = (tile as any).targetLayer as number;
@@ -457,15 +696,6 @@ function handleTileTrigger(): void {
     }
   }
 
-  if (tile instanceof TaxTile) {
-    const taxAmount = (tile as any).fixedAmount > 0 ? (tile as any).fixedAmount : Math.floor(player.totalAssets * ((tile as any).taxRate ?? 0.15));
-    player.payAmount(Math.min(taxAmount, player.cash)); // 至少付到现金为0
-    ui.log.expense(`${player.name} 缴税 $${Math.min(taxAmount, player.cash + player.bankSavings)}`);
-    ui.notify.moneyChange(-taxAmount);
-    renderer.effects.moneyFly(findTileConfig(tile.id)?.x ?? 700, findTileConfig(tile.id)?.y ?? 450, -taxAmount, '#E67E22');
-    if (!player.canAfford(1)) bus.emit('bankruptcy.start', { playerId: player.id });
-  }
-
   if (tile instanceof JailTile) {
     player.inJail = true; player.jailTurns = 3;
     bus.emit('jail.enter', { playerId: player.id, turns: 3 });
@@ -501,41 +731,148 @@ function handleTileTrigger(): void {
 }
 
 function aiHandleTile(player: Player, tile: Tile): void {
-  const ai = aiManagers.get(player.id);
-  if (!ai) { turnSys.endTurn(player); afterTurn(); return; }
+  // ---- 每个地点类型的 AI 专属行为 ----
+  if (tile instanceof PropertyTile) {
+    const ownerId = propertyOwners.get(tile.id);
+    if (!ownerId && tile.getPrice() > 0) {
+      // 无主地 → 现金充足必买，现金不足也尽量买
+      if (player.canAfford(tile.getPrice())) {
+        propertyOwners.set(tile.id, player.id);
+        propertyLevels.set(tile.id, 0);
+        player.addProperty(tile.id, tile.getPrice());
+        player.cash -= tile.getPrice();
+        ui.log.add(`购入 ${tile.name} -$${tile.getPrice()}`, 'income', player.name, player.color);
+        renderer.effects.buildAnimation(tile.x, tile.y);
+        renderer.setPropertyLevels(propertyLevels);
+      }
+    } else if (ownerId && ownerId === player.id) {
+      // 自己的地 → 考虑升级
+      const lv = propertyLevels.get(tile.id) ?? 0;
+      if (lv < 3) {
+        const cost = tile.upgradeCosts[lv] ?? 0;
+        if (player.canAfford(cost) && player.cash > 5000) {
+          player.cash -= cost;
+          propertyLevels.set(tile.id, lv + 1);
+          ui.log.add(`升级 ${tile.name} Lv${lv+1}`, 'system', player.name, player.color);
+        }
+      }
+    }
+    // 他人地产的过路费已在 handleTileTrigger 强制收取
+  }
+  else if (tile instanceof StockTile) {
+    const stocks = stockSys.getAllStocks();
+    if (stocks.length > 0 && player.cash > 1000) {
+      const pick = rng.pick(stocks);
+      const shares = Math.max(1, Math.floor(player.cash * 0.15 / pick.price));
+      if (player.cash > 5000 && rng.chance(0.3)) {
+        stockSys.shortStock(player, pick.id, shares);
+        ui.log.add(`做空 ${pick.symbol} ${shares}股`, 'warning', player.name, player.color);
+      } else {
+        stockSys.buyStock(player, pick.id, shares);
+        ui.log.add(`买入 ${pick.symbol} ${shares}股`, 'income', player.name, player.color);
+      }
+    }
+  }
+  else if (tile instanceof BankTile) {
+    if (player.cash > 3000) {
+      const amt = Math.floor(player.cash * 0.4);
+      player.deposit(amt);
+      ui.log.add(`存入 $${amt}`, 'system', player.name, player.color);
+    } else if (player.bankSavings > 1000 && player.cash < 500) {
+      player.withdraw(2000);
+      ui.log.add(`取款 $2000`, 'system', player.name, player.color);
+    }
+  }
+  else if (tile instanceof CasinoTile && player.canAfford(500)) {
+    const r = diceSys.casinoDice(500, rng.chance(0.5) ? 'big' : 'small');
+    if (r.won) player.addMoney(r.payout, '赌场');
+    else player.payAmount(500);
+    ui.log.add(r.won ? `赌场赢 $${r.payout}` : '赌场输 $500', r.won ? 'income' : 'expense', player.name, player.color);
+  }
+  else if (tile instanceof EventTile) {
+    const deck = rng.pick([chanceCards, destinyCards]);
+    if (deck.length > 0) {
+      const card = rng.pick(deck);
+      executeCardEffect(card.effects[0], player, state.getActivePlayers());
+      ui.log.add(`抽到: ${card.name}`, 'system', player.name, player.color);
+    }
+  }
+  else if (tile instanceof AirportTile) {
+    // 随机跳层
+    const targetLayer = rng.int(0, 2);
+    const layer = mapLayers[targetLayer];
+    if (layer) {
+      player.currentLayer = targetLayer;
+      player.currentTileId = layer.tiles[0].id;
+      renderer.switchLayer(targetLayer);
+      ui.log.add(`飞往 ${layer.name}`, 'system', player.name, player.color);
+    }
+  }
+  else if (tile instanceof SubwayTile) {
+    // SubwayTile的跳转在handleTileTrigger强制处理
+  }
 
-  const ctx: AIContext = {
-    player, allPlayers: state.getActivePlayers(), currentTile: tile,
-    aheadTiles: getAheadTiles(player, 6), mapLayers,
-    stocks: stockSys.getAllStocks(),
-    roundNumber: state.roundNumber, cpiMultiplier: state.economy.cpiMultiplier,
-  };
-
-  const result = ai.decide(ctx);
-  if (result) ui.log.system(result.log);
-
-  // 给 AI 操作一点延迟感
-  setTimeout(() => {
-    turnSys.endTurn(player);
-    afterTurn();
-  }, 600);
+  refreshHUD();
+  setTimeout(() => { turnSys.endTurn(player); afterTurn(); }, 400);
 }
 
 function afterTurn(): void {
   ui.actions.clear();
   tileProcessed = false;
+  renderer.hideDice();
+
+  // 对子额外回合：回退到上一个玩家（endTurn 已经 advance 了）
+  if (wasDoubles) {
+    const active = state.playerOrder.filter(id => !state.players.get(id)?.bankrupt);
+    const currActiveIdx = active.indexOf(state.getCurrentPlayerId());
+    const prevActiveIdx = (currActiveIdx - 1 + active.length) % active.length;
+    state.currentPlayerIndex = state.playerOrder.indexOf(active[prevActiveIdx]);
+    ui.log.system('🎯 对子! 额外回合');
+    ui.notify.show('🎯 对子! 再来一次', 1500, '#FFD700');
+  }
+  wasDoubles = false;
   stockSys.updatePrices();
   economySys.updateCPI();
+  tickLayerCrisis();
+  triggerRandomCrisis();
+  updateAIMentalDrift();
+  // 同步经济周期到渲染器
+  renderer.economyCycle = economySys.getEconomyCycle();
+
+  // 全局灾变效果
+  const globalCrisis = layerCrisis.get(-1);
+  if (globalCrisis && globalCrisis.remaining > 0) {
+    if (globalCrisis.type.includes('退税')) {
+      for (const [, p] of state.players) {
+        if (!p.bankrupt) p.addMoney(2000, '全民退税');
+      }
+      ui.log.income('全民退税: 每人 +$2000');
+    }
+    if (globalCrisis.type.includes('股灾')) {
+      // 股灾：所有股票跌20%
+      for (const [, stock] of state.stocks) {
+        stock.price = Math.max(1, Math.floor(stock.price * 0.8));
+      }
+    }
+    if (globalCrisis.type.includes('加息')) {
+      state.economy.loanRate = Math.min(0.5, state.economy.loanRate * 2);
+    }
+  }
 
   // 每轮结束收地产维护费
   if (state.getCurrentPlayerId() === state.playerOrder[0] && state.roundNumber > 0) {
     for (const [, p] of state.players) {
       if (p.bankrupt || p.ownedTiles.size === 0) continue;
-      const maintenance = p.ownedTiles.size * 150;
+      // 维护费 = 各地产价格的 5% × 灾变倍率
+      let maintenance = 0;
+      for (const tId of p.ownedTiles) {
+        const cfg = findTileConfig(tId);
+        maintenance += Math.floor((cfg?.property?.basePrice ?? (cfg as any)?.basePrice ?? 500) * 0.05);
+      }
+      maintenance = Math.floor(maintenance * getCrisisMaintenanceMultiplier(p.currentLayer));
       if (p.payAmount(maintenance)) {
         ui.log.expense(`${p.name} 地产维护费 -$${maintenance} (${p.ownedTiles.size}处)`);
       } else {
-        // 强制卖地抵费
         const toSell = [...p.ownedTiles].slice(0, Math.ceil(maintenance / 300));
         for (const tId of toSell) {
           const t = findTile(tId);
@@ -596,7 +933,7 @@ function findTile(id: number): Tile | null {
   const base = { id: cfg.id, name: cfg.name, type: cfg.type, layer: renderer.getCurrentLayer(), position: cfg.position, x: cfg.x, y: cfg.y };
   switch (cfg.type) {
     case TileType.START: return new StartTile({ ...base, salary: cfg.salary ?? 2000 });
-    case TileType.PROPERTY: return new PropertyTile({ ...base, ...cfg.property! });
+    case TileType.PROPERTY: return new PropertyTile({ ...base, basePrice: (cfg as any).basePrice ?? (cfg as any).price ?? 0, upgradeCosts: (cfg as any).upgradeCosts ?? [], rentTable: (cfg as any).rentTable ?? [[0,0],[0,0],[0,0],[0,0]], colorGroup: (cfg as any).colorGroup ?? 'none', mortgageValue: (cfg as any).mortgageValue ?? 0 });
     case TileType.EVENT: return new EventTile({ ...base, cardCategory: cfg.cardCategory });
     case TileType.JAIL: return new JailTile({ ...base, bailAmount: cfg.bailAmount });
     case TileType.CASINO: return new CasinoTile(base);
@@ -605,7 +942,7 @@ function findTile(id: number): Tile | null {
     case TileType.SUBWAY: return new SubwayTile({ ...base, targetLayer: cfg.targetLayer, targetPosition: cfg.targetPosition });
     case TileType.TAX: return new TaxTile({ ...base, taxRate: cfg.taxRate, fixedAmount: cfg.fixedAmount });
     case TileType.AIRPORT: return new AirportTile(base);
-    default: return new PropertyTile({ ...base, ...(cfg.property ?? { basePrice: 0, upgradeCosts: [], rentTable: [[0]], colorGroup: 'none', mortgageValue: 0 }) });
+    default: return new PropertyTile({ ...base, basePrice: (cfg as any).basePrice ?? 0, upgradeCosts: (cfg as any).upgradeCosts ?? [], rentTable: (cfg as any).rentTable ?? [[0,0],[0,0],[0,0],[0,0]], colorGroup: (cfg as any).colorGroup ?? 'none', mortgageValue: (cfg as any).mortgageValue ?? 0 });
   }
 }
 
@@ -662,6 +999,7 @@ function startAutoPlay(): void {
   ui.log.clear();
   gameOverTriggered = false;
   state.phase = GamePhase.PLAYING;
+  narrowCanvasForDashboard();
   ui.enterGame();
   refreshHUD();
   ui.log.system('🤖 自动测试模式启动 — 4 AI 高速对战');
@@ -705,11 +1043,13 @@ function startGame(): void {
 
   renderer.setPlayers([...state.players.values()]);
   renderer.effects.clear();
+  renderer.hideDice();
   renderer.switchLayer(0);
   ui.log.clear();
   gameOverTriggered = false;
   state.phase = GamePhase.PLAYING;
 
+  narrowCanvasForDashboard();
   ui.enterGame();
   refreshHUD();
 
@@ -725,11 +1065,113 @@ function startGame(): void {
   }
 }
 
+// ---- 在线联机 ----
+let onlineRoomCode = '';
+let isOnlineHost = false;
+
+function startOnlineGame(): void {
+  // 获取服务器地址
+  const serverAddr = prompt('WebSocket 服务器地址:\n(本机留空，远程输入房主给的地址)\n例如: ws://192.168.1.5:3001')?.trim() || `ws://${window.location.hostname}:3001`;
+
+  if (network) network.disconnect();
+  network = new NetworkClient(serverAddr);
+
+  const choice = prompt('联机模式:\n输入 host 创建房间\n输入房主的 4位房间码 加入房间')?.trim() ?? 'host';
+
+  if (!choice || choice.toLowerCase() === 'host') {
+    // 创建房间
+    isOnlineHost = true;
+    state.settings.mode = GameMode.ONLINE;
+    state.settings.playerCount = 1;
+    state.settings.humanPlayers = 1;
+
+    state.reset();
+    const player = createPlayer(0, true, undefined, 15000, '房主');
+    player.currentTileId = 0; player.currentLayer = 0;
+    player.ready = true;
+    state.players.set(player.id, player);
+    state.playerOrder.push(player.id);
+
+    if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
+    renderer.setPlayers([...state.players.values()]);
+    renderer.switchLayer(0);
+    renderer.effects.clear();
+    gameOverTriggered = false;
+    narrowCanvasForDashboard();
+    ui.enterGame();
+    ui.actions.clear();
+    ui.log.clear();
+    ui.log.system(`服务器: ${serverAddr}`);
+    ui.log.system('等待其他玩家加入...');
+    refreshHUD();
+
+    network.connect('HOST', '房主');
+    return;
+  }
+
+  // 加入房间
+  isOnlineHost = false;
+  onlineRoomCode = choice.toUpperCase();
+  state.settings.mode = GameMode.ONLINE;
+  state.settings.playerCount = 1;
+  state.settings.humanPlayers = 1;
+
+  state.reset();
+  const player = createPlayer(0, true, undefined, 15000, '玩家');
+  player.currentTileId = 0; player.currentLayer = 0;
+  state.players.set(player.id, player);
+  state.playerOrder.push(player.id);
+
+  if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
+  renderer.setPlayers([...state.players.values()]);
+  renderer.switchLayer(0);
+  renderer.effects.clear();
+  gameOverTriggered = false;
+  narrowCanvasForDashboard();
+  ui.enterGame();
+  ui.log.clear();
+  ui.log.system(`服务器: ${serverAddr}`);
+  ui.log.system(`正在加入房间 ${onlineRoomCode}...`);
+  refreshHUD();
+
+  network.connect(onlineRoomCode, '玩家');
+}
+
+// 联机消息处理
+bus.on('network.connect', (data) => {
+  onlineRoomCode = data.roomCode;
+  ui.log.system(`已连接! 房间码: ${onlineRoomCode}`);
+  ui.notify.show(`房间: ${onlineRoomCode}`, 3000, '#2ECC71');
+});
+
+bus.on('network.message', (data: any) => {
+  if (data.type === 'ROOM_INFO') {
+    const pl = data.payload;
+    ui.log.system(`玩家加入: ${pl?.playerName ?? '?'} (${pl?.playerCount ?? '?'}/4)`);
+  }
+  if (data.type === 'GAME_START') {
+    ui.log.system('游戏开始!');
+    ui.actions.setButtons([{ id: 'roll_dice', text: '🎲 掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+  }
+  if (data.type === 'DICE_RESULT') {
+    ui.log.system(`对手掷出: ${(data.payload as any)?.values?.join('+') ?? '?'}`);
+    // 同步对方移动
+    const pd = data.payload as any;
+    if (pd?.path && pd?.playerId) {
+      const opponent = state.getPlayer(pd.playerId);
+      if (opponent && pd.path.length > 1) {
+        opponent.currentTileId = pd.path[pd.path.length - 1];
+        refreshHUD();
+      }
+    }
+  }
+});
+
 // ---- 菜单回调 ----
 ui.mainMenu.onStartGame = (mode: GameMode) => {
   if (mode === GameMode.ONLINE) {
-    ui.log.system('在线模式: 需先启动服务器 npm run server');
-    state.settings.mode = GameMode.AI_SINGLE;
+    startOnlineGame();
+    return;
   }
   startGame();
 };
@@ -821,18 +1263,18 @@ function turboOneTurn(): void {
     state.roundNumber++;
     for (const [, p] of state.players) {
       if (p.bankrupt || p.ownedTiles.size === 0) continue;
-      const maint = p.ownedTiles.size * 150;
+      let maint = 0;
+      for (const tId of p.ownedTiles) {
+        const cfg = findTileConfig(tId);
+        maint += Math.floor((cfg?.property?.basePrice ?? (cfg as any)?.basePrice ?? 500) * 0.05);
+      }
       if (!p.payAmount(maint)) {
-        // 付不起维护费→强制卖地产
         const toSell = [...p.ownedTiles].slice(0, Math.ceil(maint / 300));
         for (const tId of toSell) {
           const t = findTile(tId);
           if (t instanceof PropertyTile) economySys.sellProperty(p, t);
         }
-        // 卖完还付不起才破产
-        if (!p.payAmount(maint)) {
-          p.bankrupt = true;
-        }
+        if (!p.payAmount(maint)) { p.bankrupt = true; }
       }
     }
     stockSys.updatePrices();
@@ -864,8 +1306,6 @@ function turboOneTurn(): void {
       economySys.collectRent(tile, player);
     } else if (tile instanceof StartTile) {
       economySys.paySalary(player, 1500);
-    } else if (tile instanceof TaxTile) {
-      tile.onLand(player);
     } else if (tile instanceof SubwayTile) {
       const tl = (tile as any).targetLayer, tp = (tile as any).targetPosition;
       const tld = mapLayers[tl];
