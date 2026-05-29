@@ -1142,12 +1142,7 @@ let myOnlinePlayerId = '';
 const PLAYER_COLORS = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12'];
 
 function startOnlineGame(): void {
-  const serverAddr = prompt('WebSocket 服务器地址:\n(本机留空，远程输入房主给的地址)\n例如: ws://192.168.1.5:3001')?.trim() || `ws://${window.location.hostname}:3001`;
-
-  if (network) network.disconnect();
-  network = new NetworkClient(serverAddr);
-
-  const choice = prompt('联机模式:\n输入 host 创建房间\n输入房主的 4位房间码 加入房间')?.trim() ?? 'host';
+  const choice = prompt('联机模式:\n输入 host 创建房间\n输入 4位房间码 加入房间')?.trim() || 'host';
 
   state.reset();
   state.settings.mode = GameMode.ONLINE;
@@ -1162,16 +1157,25 @@ function startOnlineGame(): void {
   ui.log.clear();
 
   if (!choice || choice.toLowerCase() === 'host') {
+    // === 房主：连本地服务器 ===
     isOnlineHost = true;
     const name = prompt('你的昵称:', '房主')?.trim() || '房主';
-    ui.log.system(`服务器: ${serverAddr}`);
+    if (network) network.disconnect();
+    network = new NetworkClient('ws://localhost:3001');
     ui.log.system('正在创建房间...');
-    network.connect('HOST', name, true); // createNew=true
+    network.connect('HOST', name, true);
   } else {
+    // === 加入房间 ===
     isOnlineHost = false;
     onlineRoomCode = choice.toUpperCase();
     const name = prompt('你的昵称:', '玩家')?.trim() || '玩家';
-    ui.log.system(`服务器: ${serverAddr}`);
+    const serverAddr = prompt('房主的联机地址:\n(例如 wss://xxx.loca.lt)')?.trim() || '';
+    if (!serverAddr) { ui.log.system('未输入地址，取消联机'); return; }
+    // 自动处理 wss:// 和 ws://
+    const addr = serverAddr.startsWith('ws') ? serverAddr : `wss://${serverAddr.replace(/^https?:\/\//, '')}`;
+    if (network) network.disconnect();
+    network = new NetworkClient(addr);
+    ui.log.system(`服务器: ${addr}`);
     ui.log.system(`正在加入房间 ${onlineRoomCode}...`);
     network.connect(onlineRoomCode, name);
   }
