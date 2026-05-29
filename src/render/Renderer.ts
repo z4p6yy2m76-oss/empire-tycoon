@@ -177,6 +177,7 @@ export class Renderer {
     this.renderDice(w, h);
     this.renderBubbles();
     this.renderCrisisOverlay();
+    this.renderCardPopup();
     ctx.restore();
     // === 一体化变换结束 ===
 
@@ -578,33 +579,117 @@ export class Renderer {
   // 灾变数据
   crisisText: string = '';
   crisisCountdown: number = 0;
+  private crisisNew: boolean = false;
+  private crisisAnimTimer: number = 0;
+  // 卡牌展示
+  private cardShowText: string = '';
+  private cardShowEffect: string = '';
+  private cardShowTimer: number = 0;
 
   /** 设置灾变展示 */
   setCrisis(text: string, countdown: number): void {
+    if (text && text !== this.crisisText) {
+      this.crisisNew = true;
+      this.crisisAnimTimer = 0;
+    }
     this.crisisText = text;
     this.crisisCountdown = countdown;
   }
 
-  /** 棋盘中心灾变倒计时（本地坐标） */
-  private renderCrisisOverlay(): void {
-    if (!this.crisisText || this.crisisCountdown <= 0) return;
+  /** 展示抽到的卡牌 */
+  showCardPopup(cardName: string, effect: string): void {
+    this.cardShowText = cardName;
+    this.cardShowEffect = effect;
+    this.cardShowTimer = 3.0; // 显示3秒
+  }
+
+  /** 棋盘中心卡牌展示 */
+  private renderCardPopup(): void {
+    if (this.cardShowTimer <= 0) return;
+    this.cardShowTimer -= 0.016;
     const ctx = this.ctx;
     const x = 0;
-    const y = BOARD_H / 2 - 90;
-    const w = 420, h = 38;
+    const h = 54;
+    const y = BOARD_H / 2 - h - 120;
+    const w = 400;
+    const alpha = Math.min(1, this.cardShowTimer / 0.5);
 
-    ctx.fillStyle = 'rgba(231,76,60,0.85)';
-    this.roundRect(x - w / 2, y, w, h, 19);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(30,40,80,0.95)';
+    this.roundRect(x - w / 2, y, w, h, 12);
     ctx.fill();
-    ctx.strokeStyle = '#FF6B6B';
-    ctx.lineWidth = 1.5;
-    this.roundRect(x - w / 2, y, w, h, 19);
+    ctx.strokeStyle = '#FFD700';
+    ctx.lineWidth = 2;
+    this.roundRect(x - w / 2, y, w, h, 12);
     ctx.stroke();
 
-    ctx.fillStyle = '#FFF';
-    ctx.font = 'bold 13px "Microsoft YaHei"';
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 14px "Microsoft YaHei"';
     ctx.textAlign = 'center';
-    ctx.fillText(`⚠ ${this.crisisText}  [${this.crisisCountdown}回合]`, x, y + h / 2 + 5);
+    ctx.fillText(`🃏 ${this.cardShowText}`, x, y + 22);
+    ctx.fillStyle = '#FFF';
+    ctx.font = '12px "Microsoft YaHei"';
+    ctx.fillText(this.cardShowEffect, x, y + 42);
+    ctx.restore();
+  }
+
+  /** 棋盘中心灾变倒计时（本地坐标） */
+  private renderCrisisOverlay(): void {
+    if (!this.crisisText || this.crisisCountdown <= 0) {
+      this.crisisNew = false;
+      return;
+    }
+    const ctx = this.ctx;
+    const lines = this.crisisText.split('\n').filter(l => l.trim());
+    const x = 0;
+    const h = 22 + lines.length * 16;
+    const y = BOARD_H / 2 - h - 60;
+    const w = 500;
+
+    // 新灾变出现动画（0→1秒缩放弹出）
+    if (this.crisisNew) {
+      this.crisisAnimTimer += 0.016;
+      if (this.crisisAnimTimer > 1.2) this.crisisNew = false;
+    }
+    const animScale = this.crisisNew
+      ? Math.min(1, this.crisisAnimTimer / 0.4) * (1 + Math.max(0, 0.3 - this.crisisAnimTimer) * 2)
+      : 1;
+    const alpha = this.crisisNew ? Math.min(1, this.crisisAnimTimer / 0.2) : 1;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, y + h / 2);
+    ctx.scale(animScale, animScale);
+    ctx.translate(-x, -(y + h / 2));
+
+    ctx.fillStyle = 'rgba(180,20,20,0.9)';
+    this.roundRect(x - w / 2, y, w, h, 14);
+    ctx.fill();
+    ctx.strokeStyle = '#FF6B6B';
+    ctx.lineWidth = 2;
+    this.roundRect(x - w / 2, y, w, h, 14);
+    ctx.stroke();
+
+    // 新灾变闪光
+    if (this.crisisNew && this.crisisAnimTimer < 0.8) {
+      const flashAlpha = 1 - this.crisisAnimTimer / 0.8;
+      ctx.fillStyle = `rgba(255,255,255,${flashAlpha * 0.3})`;
+      this.roundRect(x - w / 2, y, w, h, 14);
+      ctx.fill();
+    }
+
+    ctx.fillStyle = '#FFF';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 13px "Microsoft YaHei"';
+    ctx.fillText(`⚠ 灾变预警  [剩余 ${this.crisisCountdown} 回合]`, x, y + 22);
+    ctx.font = 'bold 12px "Microsoft YaHei"';
+    ctx.fillStyle = '#FFD700';
+    lines.forEach((line, i) => {
+      ctx.fillText(line, x, y + 40 + i * 18);
+    });
+
+    ctx.restore();
   }
 
   switchLayer(index: number): void {

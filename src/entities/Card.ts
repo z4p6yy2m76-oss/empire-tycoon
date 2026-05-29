@@ -4,6 +4,7 @@
 // ============================================================
 
 import type { Player } from './Player';
+import { state } from '../core/StateManager';
 
 export enum CardType {
   CHANCE = 'CHANCE',     // 机会卡
@@ -196,11 +197,100 @@ export function executeCardEffect(
       break;
     }
 
-    default:
-      // For custom script effects
-      if (executeScript) {
-        executeScript(effect.type, { player, allPlayers, effect });
+    case CardEffectType.SKIP_TURN:
+      player.skipNextTurn = true;
+      logMsg = `${player.name} 跳过下回合`;
+      break;
+
+    case CardEffectType.EXTRA_TURN:
+      logMsg = `${player.name} 获得额外回合`;
+      break;
+
+    case CardEffectType.PROPERTY_REPAIR: {
+      const cost = player.ownedTiles.size * (effect.value || 300);
+      player.payAmount(cost);
+      logMsg = `${player.name} 支付维修费 $${cost}`;
+      break;
+    }
+
+    case CardEffectType.STOCK_BONUS:
+      player.addMoney(effect.value || 2000, '股票红利');
+      logMsg = `${player.name} 获得股票红利 $${effect.value || 2000}`;
+      break;
+
+    case CardEffectType.CPI_CHANGE:
+      state.economy.cpi += effect.value;
+      state.economy.cpiMultiplier = state.economy.cpi / 100;
+      logMsg = `CPI ${effect.value > 0 ? '+' : ''}${effect.value}`;
+      break;
+
+    case CardEffectType.UPGRADE_FREE:
+      logMsg = `${player.name} 获得免费升级机会`;
+      break;
+
+    case CardEffectType.DOWNGRADE_RANDOM: {
+      const owned = [...player.ownedTiles];
+      if (owned.length > 0) {
+        const pick = owned[Math.floor(Math.random() * owned.length)];
+        logMsg = `${player.name} 的地产 #${pick} 被降级`;
+      } else {
+        logMsg = `${player.name} 没有地产可降级`;
       }
+      break;
+    }
+
+    case CardEffectType.STEAL_PROPERTY: {
+      const targets = allPlayers.filter(p => p.id !== player.id && !p.bankrupt && p.ownedTiles.size > 0);
+      if (targets.length > 0) {
+        const victim = targets[Math.floor(Math.random() * targets.length)];
+        const tileIds = [...victim.ownedTiles];
+        const stolen = tileIds[Math.floor(Math.random() * tileIds.length)];
+        victim.ownedTiles.delete(stolen);
+        player.ownedTiles.add(stolen);
+        logMsg = `${player.name} 偷走 ${victim.name} 的地产 #${stolen}`;
+      } else {
+        logMsg = '没有可偷的地产';
+      }
+      break;
+    }
+
+    case CardEffectType.EXCHANGE_POSITION: {
+      const others = allPlayers.filter(p => p.id !== player.id && !p.bankrupt);
+      if (others.length > 0) {
+        const target = others[Math.floor(Math.random() * others.length)];
+        [player.currentTileId, target.currentTileId] = [target.currentTileId, player.currentTileId];
+        [player.currentLayer, target.currentLayer] = [target.currentLayer, player.currentLayer];
+        logMsg = `${player.name} 与 ${target.name} 交换位置`;
+      }
+      break;
+    }
+
+    case CardEffectType.AUCTION_FORCE: {
+      const owned = [...player.ownedTiles];
+      if (owned.length > 0) {
+        const pick = owned[Math.floor(Math.random() * owned.length)];
+        player.ownedTiles.delete(pick);
+        logMsg = `${player.name} 的地产 #${pick} 被强制拍卖`;
+      }
+      break;
+    }
+
+    case CardEffectType.DIVIDEND: {
+      allPlayers.forEach(p => {
+        if (!p.bankrupt) p.addMoney(effect.value || 1000, '全民分红');
+      });
+      logMsg = `全民获得 $${effect.value || 1000} 分红`;
+      break;
+    }
+
+    case CardEffectType.TELEPORT_LAYER: {
+      player.currentLayer = Math.min(2, Math.max(0, effect.value));
+      player.currentTileId = -1; // 标记需要重置，由 main.ts 处理
+      logMsg = `${player.name} 传送到第 ${player.currentLayer} 层`;
+      break;
+    }
+
+    default:
       logMsg = `${player.name}: ${effect.description}`;
   }
 

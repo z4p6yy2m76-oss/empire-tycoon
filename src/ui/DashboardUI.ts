@@ -63,10 +63,10 @@ export class DashboardUI {
     });
     this.playersEl.innerHTML = playerHtml;
 
-    // 灾变提醒
+    // 灾变信息同步展示
     if (crisis) {
       this.crisisEl.style.display = 'block';
-      this.crisisEl.innerHTML = `<div class="dash-title">⚠️ 灾变预警</div><div style="font-size:11px;color:#E74C3C;">${crisis}</div>`;
+      this.crisisEl.innerHTML = `<div class="dash-title">⚠️ 灾变预警</div><div style="font-size:11px;color:#FF6B6B;">${crisis}</div>`;
     } else {
       this.crisisEl.style.display = 'none';
     }

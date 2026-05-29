@@ -20,7 +20,7 @@ import { Renderer } from './render/Renderer';
 import { createPlayer } from './entities/Player';
 import { buildMapConfig } from './data/MapConfig';
 import { buildCardDatabase, getChanceCards, getDestinyCards } from './data/CardDatabase';
-import { executeCardEffect } from './entities/Card';
+import { executeCardEffect, CardEffectType } from './entities/Card';
 import {
   TileType, type Tile,
   PropertyTile, StartTile, SubwayTile, TaxTile, JailTile,
@@ -80,7 +80,7 @@ let gameSpeed: 1 | 2 | 3 = 1; // 1=正常 2=快速 3=瞬间
 const propertyOwners = new Map<number, string>(); // tileId → playerId
 const propertyLevels = new Map<number, number>(); // tileId → 升级等级
 // 层灾变状态
-const layerCrisis: Map<number, { type: string; remaining: number }> = new Map();
+const layerCrisis: Map<number, { type: string; remaining: number; desc: string }> = new Map();
 
 // ---- 垂直垄断检测 ----
 function getVerticalMonopolyBonus(player: Player, tileId: number): number {
@@ -154,7 +154,9 @@ function tickLayerCrisis(): void {
 }
 
 function triggerRandomCrisis(): void {
-  if (Math.random() > 0.12) return; // 12%概率触发
+  // 已有灾变时不触发新的
+  if (layerCrisis.size > 0) return;
+  if (Math.random() > 0.12) return;
   const crises = [
     { type: '🌊 特大暴雨', desc: '地下层淹水，过路费归零3回合', layer: 1, effect: 'rent_zero' },
     { type: '🌫️ 严重雾霾', desc: '天空层能见度低，过路费×1.5', layer: 2, effect: 'rent_boost' },
@@ -168,12 +170,12 @@ function triggerRandomCrisis(): void {
     { type: '❄️ 寒流来袭', desc: '随机一层移动步数-2，持续3回合', layer: Math.floor(Math.random() * 3), effect: 'slow_move' },
   ];
   const crisis = crises[Math.floor(Math.random() * crises.length)];
+  const duration = 2 + Math.floor(Math.random() * 2);
   if (crisis.layer >= 0) {
-    layerCrisis.set(crisis.layer, { type: crisis.type, remaining: 2 + Math.floor(Math.random() * 2) });
+    layerCrisis.set(crisis.layer, { type: crisis.type, remaining: duration, desc: crisis.desc });
   }
-  // 全局效果存到 layer -1
   if (crisis.layer === -1) {
-    layerCrisis.set(-1, { type: crisis.type, remaining: 2 });
+    layerCrisis.set(-1, { type: crisis.type, remaining: 2, desc: crisis.desc });
   }
   ui.log.warning(`${crisis.desc}`);
   ui.notify.show(crisis.type, 2000, '#E74C3C');
@@ -412,17 +414,17 @@ function refreshHUD(): void {
   let maxCountdown = 0;
   for (const [ly, cr] of layerCrisis) {
     if (cr.remaining > 0) {
-      activeCrises.push(`${mapLayers[ly]?.name ?? (ly === -1 ? '全局' : '?')}: ${cr.type}`);
+      const layerName = ly === -1 ? '全局' : (mapLayers[ly]?.name ?? '?');
+      activeCrises.push(`${cr.type} ${layerName}: ${cr.desc}`);
       maxCountdown = Math.max(maxCountdown, cr.remaining);
     }
   }
-  renderer.setCrisis(activeCrises.join(' | '), maxCountdown);
-  const crisisText = activeCrises.length > 0 ? activeCrises.join(' | ') : null;
+  renderer.setCrisis(activeCrises.join('\n'), maxCountdown);
   ui.dashboard.refresh(
     [...state.players.values()],
     stockSys.getAllStocks(),
     economySys.getEconomyCycle(),
-    crisisText,
+    activeCrises.length > 0 ? activeCrises.join(' | ') : null,
   );
 }
 
@@ -722,10 +724,64 @@ function handleTileTrigger(): void {
     const deck = rng.pick([chanceCards, destinyCards]);
     if (deck.length > 0) {
       const card = rng.pick(deck);
-      const log = executeCardEffect(card.effects[0], player, state.getActivePlayers());
+      const logs = card.effects.map(e => executeCardEffect(e, player, state.getActivePlayers()));
       bus.emit('card.draw', { playerId: player.id, cardId: card.id });
-      ui.log.system(`抽到: ${card.name} — ${log}`);
+      ui.log.add(`🃏 ${card.name}`, 'system', player.name, player.color);
+      logs.forEach(l => {
+        const cat = l.includes('获得') || l.includes('收') || l.includes('赢') ? 'income' :
+                    l.includes('损失') || l.includes('支付') || l.includes('缴') ? 'expense' : 'system';
+        ui.log.add(`  ↳ ${l}`, cat, player.name, player.color);
+      });
+      renderer.showCardPopup(card.name, card.getSummary());
       ui.modal.showCard(card.name, card.getSummary(), card.flavor, () => {});
+
+      // === 卡牌特殊效果后处理 ===
+      card.effects.forEach(e => {
+        switch (e.type) {
+          case CardEffectType.TELEPORT_LAYER:
+            if (player.currentTileId === -1) {
+              const tgtLayer = mapLayers[player.currentLayer];
+              if (tgtLayer) player.currentTileId = tgtLayer.tiles[0].id;
+            }
+            renderer.switchLayer(player.currentLayer);
+            break;
+          case CardEffectType.MOVE_FORWARD:
+          case CardEffectType.MOVE_BACKWARD: {
+            const steps = e.type === CardEffectType.MOVE_FORWARD ? e.value : -e.value;
+            const dest2 = moveSys.calculateDestination(player, steps);
+            player.currentTileId = dest2;
+            break;
+          }
+          case CardEffectType.TELEPORT:
+            player.currentTileId = e.value;
+            break;
+          case CardEffectType.UPGRADE_FREE: {
+            const owned = [...player.ownedTiles];
+            const upgradable = owned.filter(tid => (propertyLevels.get(tid) ?? 0) < 3);
+            for (let i = 0; i < Math.min(e.value, upgradable.length); i++) {
+              propertyLevels.set(upgradable[i], (propertyLevels.get(upgradable[i]) ?? 0) + 1);
+            }
+            renderer.setPropertyLevels(propertyLevels);
+            break;
+          }
+          case CardEffectType.DOWNGRADE_RANDOM: {
+            const owned2 = [...player.ownedTiles];
+            const downgradable = owned2.filter(tid => (propertyLevels.get(tid) ?? 0) > 0);
+            for (let i = 0; i < Math.min(e.value, downgradable.length); i++) {
+              propertyLevels.set(downgradable[i], Math.max(0, (propertyLevels.get(downgradable[i]) ?? 1) - 1));
+            }
+            renderer.setPropertyLevels(propertyLevels);
+            break;
+          }
+          case CardEffectType.EXTRA_TURN:
+            wasDoubles = true; // 复用对子额外回合逻辑
+            break;
+          case CardEffectType.STEAL_PROPERTY:
+          case CardEffectType.EXCHANGE_POSITION:
+            refreshHUD();
+            break;
+        }
+      });
     }
   }
 
@@ -795,8 +851,9 @@ function aiHandleTile(player: Player, tile: Tile): void {
     const deck = rng.pick([chanceCards, destinyCards]);
     if (deck.length > 0) {
       const card = rng.pick(deck);
-      executeCardEffect(card.effects[0], player, state.getActivePlayers());
-      ui.log.add(`抽到: ${card.name}`, 'system', player.name, player.color);
+      const fxLogs = card.effects.map(e => executeCardEffect(e, player, state.getActivePlayers()));
+      ui.log.add(`🃏 ${card.name}`, 'system', player.name, player.color);
+      fxLogs.forEach(l => { ui.log.add(`  ↳ ${l}`, 'system', player.name, player.color); });
     }
   }
   else if (tile instanceof AirportTile) {
@@ -835,8 +892,11 @@ function afterTurn(): void {
   wasDoubles = false;
   stockSys.updatePrices();
   economySys.updateCPI();
-  tickLayerCrisis();
-  triggerRandomCrisis();
+  // 灾变只在每轮完整结束时递减+检测新灾变
+  if (state.getCurrentPlayerId() === state.playerOrder[0]) {
+    tickLayerCrisis();
+    triggerRandomCrisis();
+  }
   updateAIMentalDrift();
   // 同步经济周期到渲染器
   renderer.economyCycle = economySys.getEconomyCycle();
@@ -1263,6 +1323,8 @@ function turboOneTurn(): void {
 
   if (player.id === state.playerOrder[0]) {
     state.roundNumber++;
+    tickLayerCrisis();
+    triggerRandomCrisis();
     for (const [, p] of state.players) {
       if (p.bankrupt || p.ownedTiles.size === 0) continue;
       let maint = 0;
