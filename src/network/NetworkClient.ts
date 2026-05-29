@@ -33,7 +33,7 @@ export class NetworkClient {
 
   setServerUrl(url: string): void { this.url = url; }
 
-  connect(roomCode: string, playerName: string): void {
+  connect(roomCode: string, playerName: string, createNew: boolean = false): void {
     this.roomCode = roomCode;
     this.playerName = playerName;
     this.state = ConnectionState.CONNECTING;
@@ -44,11 +44,12 @@ export class NetworkClient {
       this.ws.onopen = () => {
         this.state = ConnectionState.CONNECTED;
         this.startPing();
-        // 加入房间
-        this.send(createMessage(MessageType.JOIN_ROOM, {
-          roomCode, playerName,
-        }));
-        // 发送队列中的消息
+        // 创建房间 or 加入房间
+        if (createNew) {
+          this.send(createMessage(MessageType.CREATE_ROOM, { playerName }));
+        } else {
+          this.send(createMessage(MessageType.JOIN_ROOM, { roomCode, playerName }));
+        }
         this.flushQueue();
       };
 

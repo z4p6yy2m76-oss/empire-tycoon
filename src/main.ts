@@ -1166,7 +1166,7 @@ function startOnlineGame(): void {
     const name = prompt('你的昵称:', '房主')?.trim() || '房主';
     ui.log.system(`服务器: ${serverAddr}`);
     ui.log.system('正在创建房间...');
-    network.send({ type: 'CREATE_ROOM' as any, timestamp: Date.now(), playerName: name });
+    network.connect('HOST', name, true); // createNew=true
   } else {
     isOnlineHost = false;
     onlineRoomCode = choice.toUpperCase();
