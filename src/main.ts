@@ -676,20 +676,22 @@ function handleTileTrigger(): void {
 
   if (tile instanceof JailTile) {
     if (player.inJail) {
-      ui.actions.addButton({ id: 'jail_bail', text: `💰 保释 $${(tile as any).bailAmount ?? 500}`, cssClass: 'btn-buy', disabled: !player.canAfford((tile as any).bailAmount ?? 500), onClick: () => {
-        player.payAmount((tile as any).bailAmount ?? 500);
+      ui.actions.addButton({ id: 'jail_bail', text: `💰 保释 $${(tile as any).bailAmount ?? 1000}`, cssClass: 'btn-buy', disabled: !player.canAfford((tile as any).bailAmount ?? 1000), onClick: () => {
+        player.payAmount((tile as any).bailAmount ?? 1000);
         player.inJail = false; player.jailTurns = 0;
-        bus.emit('jail.leave', { playerId: player.id, paid: (tile as any).bailAmount ?? 500 });
+        bus.emit('jail.leave', { playerId: player.id, paid: (tile as any).bailAmount ?? 1000 });
+        turnSys.endTurn(player); afterTurn();
       }});
       if (player.hasGetOutOfJailCard) {
         ui.actions.addButton({ id: 'jail_card', text: '🃏 使用出狱卡', cssClass: 'btn-upgrade', disabled: false, onClick: () => {
           player.hasGetOutOfJailCard = false; player.inJail = false; player.jailTurns = 0;
           bus.emit('jail.leave', { playerId: player.id, paid: 0 });
+          turnSys.endTurn(player); afterTurn();
         }});
       }
-      ui.actions.addButton({ id: 'jail_stay', text: '🔒 继续蹲', cssClass: 'btn-skip', disabled: false, onClick: () => {
-        player.jailTurns--;
-        if (player.jailTurns <= 0) { player.inJail = false; bus.emit('jail.leave', { playerId: player.id, paid: 0 }); }
+      ui.actions.addButton({ id: 'jail_stay', text: `🔒 继续蹲 (剩${player.jailTurns}回合)`, cssClass: 'btn-skip', disabled: false, onClick: () => {
+        // 不扣回合，等下次掷骰时由 handleDiceRoll 处理
+        turnSys.endTurn(player); afterTurn();
       }});
     } else {
       ui.log.system(`${player.name} 路过监狱（参观）`);
