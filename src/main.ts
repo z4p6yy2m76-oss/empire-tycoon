@@ -497,12 +497,19 @@ function handleDiceRoll(): void {
     return;
   }
 
-  // 联机模式：发送移动数据
+  // 联机模式：发送移动数据 + 结束回合通知
   if (network && state.settings.mode === GameMode.ONLINE) {
     network.send({
       type: 'PLAYER_MOVE' as any,
       timestamp: Date.now(),
-      payload: { playerId: player.id, path, steps },
+      payload: { playerId: player.id, path, steps, layer: player.currentLayer },
+    });
+    // 通知其他玩家谁继续
+    const next = state.playerOrder[(state.playerOrder.indexOf(player.id) + 1) % state.playerOrder.length];
+    network.send({
+      type: 'END_TURN' as any,
+      timestamp: Date.now(),
+      payload: { playerId: player.id, nextPlayerId: next },
     });
   }
 
@@ -1130,9 +1137,11 @@ function startGame(): void {
 // ---- 在线联机 ----
 let onlineRoomCode = '';
 let isOnlineHost = false;
+let myOnlinePlayerId = '';
+
+const PLAYER_COLORS = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12'];
 
 function startOnlineGame(): void {
-  // 获取服务器地址
   const serverAddr = prompt('WebSocket 服务器地址:\n(本机留空，远程输入房主给的地址)\n例如: ws://192.168.1.5:3001')?.trim() || `ws://${window.location.hostname}:3001`;
 
   if (network) network.disconnect();
@@ -1140,89 +1149,106 @@ function startOnlineGame(): void {
 
   const choice = prompt('联机模式:\n输入 host 创建房间\n输入房主的 4位房间码 加入房间')?.trim() ?? 'host';
 
-  if (!choice || choice.toLowerCase() === 'host') {
-    // 创建房间
-    isOnlineHost = true;
-    state.settings.mode = GameMode.ONLINE;
-    state.settings.playerCount = 1;
-    state.settings.humanPlayers = 1;
-
-    state.reset();
-    const player = createPlayer(0, true, undefined, 15000, '房主');
-    player.currentTileId = 0; player.currentLayer = 0;
-    player.ready = true;
-    state.players.set(player.id, player);
-    state.playerOrder.push(player.id);
-
-    if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
-    renderer.setPlayers([...state.players.values()]);
-    renderer.switchLayer(0);
-    renderer.effects.clear();
-    gameOverTriggered = false;
-    narrowCanvasForDashboard();
-    ui.enterGame();
-    ui.actions.clear();
-    ui.log.clear();
-    ui.log.system(`服务器: ${serverAddr}`);
-    ui.log.system('等待其他玩家加入...');
-    refreshHUD();
-
-    network.connect('HOST', '房主');
-    return;
-  }
-
-  // 加入房间
-  isOnlineHost = false;
-  onlineRoomCode = choice.toUpperCase();
-  state.settings.mode = GameMode.ONLINE;
-  state.settings.playerCount = 1;
-  state.settings.humanPlayers = 1;
-
   state.reset();
-  const player = createPlayer(0, true, undefined, 15000, '玩家');
-  player.currentTileId = 0; player.currentLayer = 0;
-  state.players.set(player.id, player);
-  state.playerOrder.push(player.id);
-
-  if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
-  renderer.setPlayers([...state.players.values()]);
+  state.settings.mode = GameMode.ONLINE;
+  state.settings.playerCount = 0;
+  state.settings.humanPlayers = 0;
   renderer.switchLayer(0);
   renderer.effects.clear();
   gameOverTriggered = false;
   narrowCanvasForDashboard();
   ui.enterGame();
+  ui.actions.clear();
   ui.log.clear();
-  ui.log.system(`服务器: ${serverAddr}`);
-  ui.log.system(`正在加入房间 ${onlineRoomCode}...`);
-  refreshHUD();
 
-  network.connect(onlineRoomCode, '玩家');
+  if (!choice || choice.toLowerCase() === 'host') {
+    isOnlineHost = true;
+    const name = prompt('你的昵称:', '房主')?.trim() || '房主';
+    ui.log.system(`服务器: ${serverAddr}`);
+    ui.log.system('正在创建房间...');
+    network.send({ type: 'CREATE_ROOM' as any, timestamp: Date.now(), playerName: name });
+  } else {
+    isOnlineHost = false;
+    onlineRoomCode = choice.toUpperCase();
+    const name = prompt('你的昵称:', '玩家')?.trim() || '玩家';
+    ui.log.system(`服务器: ${serverAddr}`);
+    ui.log.system(`正在加入房间 ${onlineRoomCode}...`);
+    network.connect(onlineRoomCode, name);
+  }
+  refreshHUD();
 }
 
-// 联机消息处理
+// ---- 联机消息处理 ----
 bus.on('network.connect', (data) => {
   onlineRoomCode = data.roomCode;
-  ui.log.system(`已连接! 房间码: ${onlineRoomCode}`);
-  ui.notify.show(`房间: ${onlineRoomCode}`, 3000, '#2ECC71');
+  ui.log.system(`已连接到房间 ${onlineRoomCode}`);
 });
 
 bus.on('network.message', (data: any) => {
   if (data.type === 'ROOM_INFO') {
-    const pl = data.payload;
-    ui.log.system(`玩家加入: ${pl?.playerName ?? '?'} (${pl?.playerCount ?? '?'}/4)`);
+    const payload = data.payload;
+    onlineRoomCode = payload.roomCode || onlineRoomCode;
+    myOnlinePlayerId = data.playerId || myOnlinePlayerId;
+
+    // 从服务器玩家列表重建本地玩家
+    const serverPlayers: Array<{ id: string; name: string; color: string; ready: boolean }> = payload.players || [];
+    state.players.clear();
+    state.playerOrder = [];
+    serverPlayers.forEach((sp, i) => {
+      const isMe = sp.id === myOnlinePlayerId;
+      const p = createPlayer(i, true, undefined, 15000, sp.name);
+      p.color = sp.color; // 用服务器分配的颜色
+      p.id = sp.id;
+      p.currentTileId = 0; p.currentLayer = 0;
+      state.players.set(p.id, p);
+      state.playerOrder.push(p.id);
+    });
+    state.settings.playerCount = serverPlayers.length;
+    state.settings.humanPlayers = serverPlayers.length;
+
+    if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
+    renderer.setPlayers([...state.players.values()]);
+    refreshHUD();
+
+    const names = serverPlayers.map(p => `${p.name}(${p.color})`).join(', ');
+    ui.log.system(`房间 ${onlineRoomCode}: ${names} (${serverPlayers.length}/4)`);
+    if (isOnlineHost) ui.notify.show(`房间: ${onlineRoomCode}`, 3000, '#2ECC71');
   }
+
   if (data.type === 'GAME_START') {
     ui.log.system('游戏开始!');
-    ui.actions.setButtons([{ id: 'roll_dice', text: '🎲 掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+    state.phase = GamePhase.PLAYING;
+    const first = state.getCurrentPlayer();
+    if (first && first.id === myOnlinePlayerId) {
+      ui.actions.setButtons([{ id: 'roll_dice', text: '掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+      ui.notify.show('你的回合!', 1500, '#FFD700');
+    }
   }
-  if (data.type === 'DICE_RESULT') {
-    ui.log.system(`对手掷出: ${(data.payload as any)?.values?.join('+') ?? '?'}`);
-    // 同步对方移动
+
+  if (data.type === 'DICE_RESULT' || data.type === 'PLAYER_MOVE') {
     const pd = data.payload as any;
-    if (pd?.path && pd?.playerId) {
+    if (pd?.playerId && pd?.path) {
       const opponent = state.getPlayer(pd.playerId);
-      if (opponent && pd.path.length > 1) {
+      if (opponent) {
         opponent.currentTileId = pd.path[pd.path.length - 1];
+        opponent.currentLayer = pd.layer ?? opponent.currentLayer;
+        refreshHUD();
+        ui.log.add(`${opponent.name} 移动到 #${opponent.currentTileId}`, 'system', opponent.name, opponent.color);
+      }
+    }
+  }
+
+  if (data.type === 'END_TURN') {
+    const pd = data.payload as any;
+    if (pd?.playerId) {
+      const p = state.getPlayer(pd.playerId);
+      if (p) {
+        state.currentPlayerIndex = state.playerOrder.indexOf(pd.nextPlayerId);
+        const next = state.getCurrentPlayer();
+        if (next && next.id === myOnlinePlayerId) {
+          ui.actions.setButtons([{ id: 'roll_dice', text: '掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+          ui.notify.show('你的回合!', 1500, '#FFD700');
+        }
         refreshHUD();
       }
     }
