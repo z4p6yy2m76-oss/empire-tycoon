@@ -31,6 +31,7 @@ import { NetworkClient } from './network/NetworkClient';
 import { MessageType } from './network/NetworkProtocol';
 import { SaveFileHandler } from './utils/SaveFileHandler';
 import { ui } from './ui/UIManager';
+import { onlineModal } from './ui/OnlineModalUI';
 import { AutoPlayDebugger } from './utils/AutoPlayDebugger';
 
 const debugger_ = new AutoPlayDebugger();
@@ -1141,8 +1142,9 @@ let myOnlinePlayerId = '';
 
 const PLAYER_COLORS = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12'];
 
-function startOnlineGame(): void {
-  const choice = prompt('联机模式:\n输入 host 创建房间\n输入 4位房间码 加入房间')?.trim() || 'host';
+async function startOnlineGame(): Promise<void> {
+  const config = await onlineModal.show();
+  if (!config) return; // 用户取消弹窗
 
   state.reset();
   state.settings.mode = GameMode.ONLINE;
@@ -1164,17 +1166,18 @@ function startOnlineGame(): void {
   if (network) network.disconnect();
   network = new NetworkClient();
 
-  if (!choice || choice.toLowerCase() === 'host') {
+  if (config.identity === 'host') {
     isOnlineHost = true;
-    const name = prompt('你的昵称:', '房主')?.trim() || '房主';
-    ui.log.system('正在创建房间...');
-    network.connect('HOST', name, true);
+    onlineRoomCode = config.roomCode;
+    ui.log.system(`房间码: ${config.roomCode}`);
+    ui.log.system(`${config.nickname} 创建房间...`);
+    network.connect('HOST', config.nickname, true);
+    ui.notify.show(`房间码: ${config.roomCode}`, 5000, '#2ECC71');
   } else {
     isOnlineHost = false;
-    onlineRoomCode = choice.toUpperCase();
-    const name = prompt('你的昵称:', '玩家')?.trim() || '玩家';
-    ui.log.system(`正在加入房间 ${onlineRoomCode}...`);
-    network.connect(onlineRoomCode, name);
+    onlineRoomCode = config.roomCode;
+    ui.log.system(`${config.nickname} 加入房间 ${config.roomCode}...`);
+    network.connect(config.roomCode, config.nickname);
   }
   refreshHUD();
 }
