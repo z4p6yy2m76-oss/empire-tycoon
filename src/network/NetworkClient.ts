@@ -27,8 +27,13 @@ export class NetworkClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
 
+  // ===== 联机展示配置 - Cloudflare Tunnel 适配 =====
+  // 不再写死端口 3001，改为使用当前页面的域名 + /ws 路径
+  // Vite 代理会把 /ws 转发到本机 WebSocket 服务器
+  // 协议自动适配：本地用 ws://，Cloudflare Tunnel 环境用 wss://
   constructor(url?: string) {
-    this.url = url ?? `ws://${window.location.hostname}:3001`;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.url = url ?? `${proto}//${window.location.host}/ws`;
   }
 
   setServerUrl(url: string): void { this.url = url; }

@@ -1156,26 +1156,23 @@ function startOnlineGame(): void {
   ui.actions.clear();
   ui.log.clear();
 
+  // ===== 联机展示配置 - Cloudflare Tunnel 适配 =====
+  // 统一自动地址：当前浏览器域名 + /ws 路径
+  // 本地环境: ws://localhost:5173/ws → Vite代理 → server.ts:3001
+  // Cloudflare: wss://xxx.trycloudflare.com/ws → CF → Vite代理 → server.ts:3001
+  // 同学和房主都用同一套逻辑，不再手动输入服务器地址
+  if (network) network.disconnect();
+  network = new NetworkClient();
+
   if (!choice || choice.toLowerCase() === 'host') {
-    // === 房主：连本地服务器 ===
     isOnlineHost = true;
     const name = prompt('你的昵称:', '房主')?.trim() || '房主';
-    if (network) network.disconnect();
-    network = new NetworkClient('ws://localhost:3001');
     ui.log.system('正在创建房间...');
     network.connect('HOST', name, true);
   } else {
-    // === 加入房间 ===
     isOnlineHost = false;
     onlineRoomCode = choice.toUpperCase();
     const name = prompt('你的昵称:', '玩家')?.trim() || '玩家';
-    const serverAddr = prompt('房主的联机地址:\n(例如 wss://xxx.loca.lt)')?.trim() || '';
-    if (!serverAddr) { ui.log.system('未输入地址，取消联机'); return; }
-    // 自动处理 wss:// 和 ws://
-    const addr = serverAddr.startsWith('ws') ? serverAddr : `wss://${serverAddr.replace(/^https?:\/\//, '')}`;
-    if (network) network.disconnect();
-    network = new NetworkClient(addr);
-    ui.log.system(`服务器: ${addr}`);
     ui.log.system(`正在加入房间 ${onlineRoomCode}...`);
     network.connect(onlineRoomCode, name);
   }
