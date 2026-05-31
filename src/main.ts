@@ -261,7 +261,12 @@ window.addEventListener('keydown', (e) => {
     }
     ui.modal.show('暂停', '游戏已暂停', btns);
   }
-  if (e.key === 'r' && state.phase === GamePhase.ROLLING) handleDiceRoll();
+  if (e.key === 'r' && state.phase === GamePhase.ROLLING) {
+    const cp = state.getCurrentPlayer();
+    if (cp && (state.settings.mode !== GameMode.ONLINE || cp.id === myOnlinePlayerId)) {
+      handleDiceRoll();
+    }
+  }
   if (e.key === '1') { renderer.switchLayer(0); refreshHUD(); }
   if (e.key === '2') { renderer.switchLayer(1); refreshHUD(); }
   if (e.key === '3') { renderer.switchLayer(2); refreshHUD(); }
@@ -434,6 +439,12 @@ function handleDiceRoll(): void {
   const player = state.getCurrentPlayer();
   if (!player) return;
 
+  // ===== 联机回合校验：不是自己的回合不允许掷骰 =====
+  if (state.settings.mode === GameMode.ONLINE && player.id !== myOnlinePlayerId) {
+    ui.notify.show('等待对方回合', 1500, '#F39C12');
+    return;
+  }
+
   if (player.inJail) {
     const result = diceSys.rollForJail();
     ui.log.system(`${player.name} 掷骰: [${result.values}]`);
@@ -498,19 +509,13 @@ function handleDiceRoll(): void {
     return;
   }
 
-  // 联机模式：发送移动数据 + 结束回合通知
+  // 联机模式：发送移动数据（附带目标格中文名；END_TURN 在 afterTurn 发送）
   if (network && state.settings.mode === GameMode.ONLINE) {
+    const destCfg = findTileConfig(dest);
     network.send({
       type: 'PLAYER_MOVE' as any,
       timestamp: Date.now(),
-      payload: { playerId: player.id, path, steps, layer: player.currentLayer },
-    });
-    // 通知其他玩家谁继续
-    const next = state.playerOrder[(state.playerOrder.indexOf(player.id) + 1) % state.playerOrder.length];
-    network.send({
-      type: 'END_TURN' as any,
-      timestamp: Date.now(),
-      payload: { playerId: player.id, nextPlayerId: next },
+      payload: { playerId: player.id, path, steps, layer: player.currentLayer, tileName: destCfg?.name ?? `#${dest}`, tileId: dest },
     });
   }
 
@@ -675,11 +680,11 @@ function handleTileTrigger(): void {
 
   if (tile instanceof BankTile) {
     ui.actions.addButton({ id: 'bank_deposit', text: `🏦 存款 (现金 $${player.cash.toLocaleString()})`, cssClass: 'btn-buy', disabled: player.cash <= 0, onClick: () => {
-      const amt = Math.min(player.cash, parseInt(prompt('存入金额:', Math.floor(player.cash * 0.5).toString()) || '0'));
+      const amt = Math.floor(player.cash * 0.5); // 默认存入一半现金
       if (amt > 0 && player.deposit(amt)) { ui.log.income(`存入 $${amt}`); refreshHUD(); }
     }});
     ui.actions.addButton({ id: 'bank_withdraw', text: `💵 取款 (存款 $${player.bankSavings.toLocaleString()})`, cssClass: 'btn-end-turn', disabled: player.bankSavings <= 0, onClick: () => {
-      const amt = Math.min(player.bankSavings, parseInt(prompt('取出金额:', Math.floor(player.bankSavings * 0.5).toString()) || '0'));
+      const amt = Math.floor(player.bankSavings * 0.5); // 默认取出一半存款
       if (amt > 0 && player.withdraw(amt)) { ui.log.system(`取出 $${amt}`); refreshHUD(); }
     }});
   }
@@ -975,6 +980,21 @@ function afterTurn(): void {
   }
   refreshHUD();
 
+  // ===== 联机模式：本地玩家回合结束 → 通知对方；对方回合 → 等待 END_TURN =====
+  if (state.settings.mode === GameMode.ONLINE && next.id !== myOnlinePlayerId) {
+    // 找到刚结束回合的玩家（2人游戏中就是不是 next 的那个）
+    const fromId = state.playerOrder.find(id => id !== next.id && !state.players.get(id)?.bankrupt) || myOnlinePlayerId;
+    console.log('[END_TURN 发送] from:', fromId, 'next:', next.id);
+    network?.send({
+      type: 'END_TURN' as any,
+      timestamp: Date.now(),
+      payload: { playerId: fromId, nextPlayerId: next.id },
+    });
+    ui.actions.clear();
+    ui.log.add(`等待 ${next.name} 操作...`, 'system', next.name, next.color);
+    return;
+  }
+
   // 人类玩家：显示掷骰按钮；AI自动掷骰
   if (next.isHuman) {
     ui.actions.setButtons([{
@@ -1153,79 +1173,156 @@ async function startOnlineGame(): Promise<void> {
   renderer.switchLayer(0);
   renderer.effects.clear();
   gameOverTriggered = false;
-  narrowCanvasForDashboard();
-  ui.enterGame();
-  ui.actions.clear();
-  ui.log.clear();
+  state.phase = GamePhase.PLAYING;
 
-  // ===== 联机展示配置 - Cloudflare Tunnel 适配 =====
-  // 统一自动地址：当前浏览器域名 + /ws 路径
-  // 本地环境: ws://localhost:5173/ws → Vite代理 → server.ts:3001
-  // Cloudflare: wss://xxx.trycloudflare.com/ws → CF → Vite代理 → server.ts:3001
-  // 同学和房主都用同一套逻辑，不再手动输入服务器地址
   if (network) network.disconnect();
   network = new NetworkClient();
 
+  // 隐藏主菜单，暂不显示游戏 UI（等 GAME_START 再调用 ui.enterGame()）
+  ui.mainMenu.hide();
+  ui.log.clear();
+
   if (config.identity === 'host') {
     isOnlineHost = true;
-    onlineRoomCode = config.roomCode;
-    ui.log.system(`房间码: ${config.roomCode}`);
     ui.log.system(`${config.nickname} 创建房间...`);
+    // 房主传 'HOST' 占位，真实房间码由服务器 ROOM_INFO 返回后更新
     network.connect('HOST', config.nickname, true);
-    ui.notify.show(`房间码: ${config.roomCode}`, 5000, '#2ECC71');
   } else {
     isOnlineHost = false;
     onlineRoomCode = config.roomCode;
     ui.log.system(`${config.nickname} 加入房间 ${config.roomCode}...`);
     network.connect(config.roomCode, config.nickname);
   }
-  refreshHUD();
 }
+
+// ---- 联机等待房间回调（LobbyUI 按钮 → 网络操作） ----
+ui.lobby.onStartGame = () => {
+  console.log('[main.ts] onStartGame 回调触发, network=', !!network, 'isOnlineHost=', isOnlineHost);
+  network?.forceStartGame();
+};
+
+ui.lobby.onReadyToggle = () => {
+  console.log('[main.ts] onReadyToggle 回调触发, network=', !!network, 'isOnlineHost=', isOnlineHost);
+  network?.setReady();
+};
+
+ui.lobby.onLeave = () => {
+  console.log('[main.ts] onLeave 回调触发');
+  network?.disconnect();
+  ui.lobby.hide();
+  ui.mainMenu.show();
+  state.reset();
+};
 
 // ---- 联机消息处理 ----
 bus.on('network.connect', (data) => {
   onlineRoomCode = data.roomCode;
   ui.log.system(`已连接到房间 ${onlineRoomCode}`);
+  // 显示等待房间面板
+  ui.lobby.show(onlineRoomCode, isOnlineHost);
 });
 
 bus.on('network.message', (data: any) => {
+  // ===== 房间信息：重建玩家列表 + 更新 Lobby UI =====
   if (data.type === 'ROOM_INFO') {
     const payload = data.payload;
+    // 更新房间码（房主从 'HOST' 变为服务器返回的真实房间码）
     onlineRoomCode = payload.roomCode || onlineRoomCode;
-    myOnlinePlayerId = data.playerId || myOnlinePlayerId;
+    // 只在首次设置 myOnlinePlayerId，后续 ROOM_INFO 广播携带的是其他玩家的 ID，不能覆盖
+    if (!myOnlinePlayerId && data.playerId) myOnlinePlayerId = data.playerId as string;
 
     // 从服务器玩家列表重建本地玩家
     const serverPlayers: Array<{ id: string; name: string; color: string; ready: boolean }> = payload.players || [];
-    state.players.clear();
-    state.playerOrder = [];
-    serverPlayers.forEach((sp, i) => {
-      const isMe = sp.id === myOnlinePlayerId;
-      const p = createPlayer(i, true, undefined, 15000, sp.name);
-      p.color = sp.color; // 用服务器分配的颜色
-      p.id = sp.id;
-      p.currentTileId = 0; p.currentLayer = 0;
-      state.players.set(p.id, p);
-      state.playerOrder.push(p.id);
-    });
-    state.settings.playerCount = serverPlayers.length;
-    state.settings.humanPlayers = serverPlayers.length;
+    if (serverPlayers.length > 0) {
+      state.players.clear();
+      state.playerOrder = [];
+      serverPlayers.forEach((sp, i) => {
+        const p = createPlayer(i, true, undefined, 15000, sp.name);
+        p.color = sp.color; // 用服务器分配的颜色
+        p.id = sp.id;
+        p.currentTileId = 0; p.currentLayer = 0;
+        state.players.set(p.id, p);
+        state.playerOrder.push(p.id);
+      });
+      state.settings.playerCount = serverPlayers.length;
+      state.settings.humanPlayers = serverPlayers.length;
 
-    if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
-    renderer.setPlayers([...state.players.values()]);
-    refreshHUD();
+      if (state.settings.enableStocks) { stockSys.initMarket(); stockSys.updatePrices(); }
+      renderer.setPlayers([...state.players.values()]);
 
-    const names = serverPlayers.map(p => `${p.name}(${p.color})`).join(', ');
-    ui.log.system(`房间 ${onlineRoomCode}: ${names} (${serverPlayers.length}/4)`);
-    if (isOnlineHost) ui.notify.show(`房间: ${onlineRoomCode}`, 3000, '#2ECC71');
+      // 更新 Lobby 等待房间面板
+      ui.lobby.updatePlayers(serverPlayers.map(sp => ({
+        id: sp.id,
+        name: sp.name,
+        color: sp.color,
+        ready: sp.ready,
+        isHost: state.playerOrder[0] === sp.id,
+        isMe: sp.id === myOnlinePlayerId,
+      })));
+
+      // 同步自己的准备状态到按钮
+      const me = serverPlayers.find(sp => sp.id === myOnlinePlayerId);
+      if (me) ui.lobby.setReadyState(me.ready);
+
+      // 更新 Lobby（仅刷新房间码文字和玩家列表，不重置按钮状态）
+      if (ui.lobby.isVisible()) {
+        ui.lobby.updateRoomCode(onlineRoomCode);
+        // updatePlayers 已经在上面调用过了，这里不需要重复
+      }
+
+      const names = serverPlayers.map(p => `${p.name}(${p.color})`).join(', ');
+      ui.log.system(`房间 ${onlineRoomCode}: ${names} (${serverPlayers.length}/4)`);
+      if (isOnlineHost) ui.notify.show(`房间: ${onlineRoomCode}`, 3000, '#2ECC71');
+    }
   }
 
+  // ===== 房间错误提示 =====
+  if (data.type === 'ROOM_ERROR') {
+    const errMsg = (data.payload as any)?.error || '未知错误';
+    ui.notify.show(`房间错误: ${errMsg}`, 4000, '#E74C3C');
+    ui.log.system(`房间错误: ${errMsg}`);
+  }
+
+  // ===== 准备状态同步（保底提示） =====
+  if (data.type === 'PLAYER_READY') {
+    const prPlayerId = data.playerId as string;
+    if (prPlayerId) {
+      ui.log.system(`玩家 ${prPlayerId} 切换准备状态`);
+    }
+  }
+
+  // ===== 游戏开始：隐藏 Lobby → 显示游戏 UI → 进入首回合 =====
   if (data.type === 'GAME_START') {
+    ui.lobby.hide();
+    ui.enterGame();
+    narrowCanvasForDashboard();
     ui.log.system('游戏开始!');
     state.phase = GamePhase.PLAYING;
+
+    // 根据服务器指定的首玩家对齐回合
+    const payload = data.payload as any;
+    if (payload?.playerOrder) {
+      state.playerOrder = payload.playerOrder;
+    }
+    if (payload?.firstPlayer) {
+      state.currentPlayerIndex = state.playerOrder.indexOf(payload.firstPlayer);
+    }
+
+    refreshHUD();
+    renderer.setPlayers([...state.players.values()]);
+    renderer.hideDice();     // 重置骰子状态（对应单人 startGame 第1116行）
+    renderer.effects.clear(); // 清粒子特效
+    renderer.switchLayer(0);
+
     const first = state.getCurrentPlayer();
-    if (first && first.id === myOnlinePlayerId) {
-      ui.actions.setButtons([{ id: 'roll_dice', text: '掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
-      ui.notify.show('你的回合!', 1500, '#FFD700');
+    if (first) {
+      // beginTurn 设置 phase=ROLLING（R 键依赖）、发 turn.start 事件
+      turnSys.beginTurn(first);
+      ui.log.system('=== Empire Tycoon 帝国大亨 ===');
+      if (first.id === myOnlinePlayerId) {
+        ui.actions.setButtons([{ id: 'roll_dice', text: '🎲 掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
+        ui.notify.show('你的回合!', 1500, '#FFD700');
+      }
     }
   }
 
@@ -1237,18 +1334,21 @@ bus.on('network.message', (data: any) => {
         opponent.currentTileId = pd.path[pd.path.length - 1];
         opponent.currentLayer = pd.layer ?? opponent.currentLayer;
         refreshHUD();
-        ui.log.add(`${opponent.name} 移动到 #${opponent.currentTileId}`, 'system', opponent.name, opponent.color);
+        const tileLabel = pd.tileName || findTileConfig(opponent.currentTileId)?.name || `#${opponent.currentTileId}`;
+        ui.log.add(`${opponent.name} 移动到 ${tileLabel}`, 'system', opponent.name, opponent.color);
       }
     }
   }
 
   if (data.type === 'END_TURN') {
     const pd = data.payload as any;
+    console.log('[END_TURN 收到] myOnlinePlayerId:', myOnlinePlayerId, 'payload:', JSON.stringify(pd));
     if (pd?.playerId) {
       const p = state.getPlayer(pd.playerId);
       if (p) {
         state.currentPlayerIndex = state.playerOrder.indexOf(pd.nextPlayerId);
         const next = state.getCurrentPlayer();
+        console.log('[END_TURN 收到] nextId:', next?.id, 'nextName:', next?.name, 'myOnlinePlayerId:', myOnlinePlayerId, '匹配:', next?.id === myOnlinePlayerId);
         if (next && next.id === myOnlinePlayerId) {
           ui.actions.setButtons([{ id: 'roll_dice', text: '掷骰子', cssClass: 'btn-end-turn', disabled: false, onClick: () => handleDiceRoll() }]);
           ui.notify.show('你的回合!', 1500, '#FFD700');

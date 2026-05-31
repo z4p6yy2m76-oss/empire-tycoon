@@ -100,13 +100,65 @@ function handleMessage(
     case MessageType.PLAYER_READY: {
       const session = rooms.getRoom(roomCode);
       if (session) {
+        // setReady 内部已广播 ROOM_INFO 同步玩家列表（含准备状态）
         session.setReady(playerId);
-        // Notify all that this player is ready
-        session.relayAction(playerId, {
-          ...msg,
-          type: MessageType.PLAYER_READY,
-        });
       }
+      break;
+    }
+
+    // ===== 房主强制开局（不等所有人准备） =====
+    case MessageType.START_GAME: {
+      console.log('[START_GAME] ===== 服务端收到强制开局请求 =====');
+      console.log('[START_GAME] playerId:', playerId);
+      console.log('[START_GAME] roomCode:', roomCode);
+
+      const session = rooms.getRoom(roomCode);
+      console.log('[START_GAME] 房间存在:', !!session);
+
+      if (!session) {
+        console.log('[START_GAME] 失败: 房间不存在');
+        ws.send(JSON.stringify({
+          type: MessageType.ROOM_ERROR,
+          timestamp: Date.now(),
+          payload: { error: '房间不存在，请检查房间码' },
+        }));
+        break;
+      }
+
+      // 验证发送者是房主
+      const hostId = session.getHostId();
+      console.log('[START_GAME] 发送者:', playerId, '房主:', hostId, '匹配:', playerId === hostId);
+
+      if (playerId !== hostId) {
+        console.log('[START_GAME] 失败: 不是房主');
+        ws.send(JSON.stringify({
+          type: MessageType.ROOM_ERROR,
+          timestamp: Date.now(),
+          payload: { error: '只有房主可以开始游戏' },
+        }));
+        break;
+      }
+
+      // 至少2人
+      const playerCount = session.getPlayerCount();
+      console.log('[START_GAME] 玩家人数:', playerCount, '>=2:', playerCount >= 2);
+
+      if (playerCount < 2) {
+        console.log('[START_GAME] 失败: 人数不足');
+        ws.send(JSON.stringify({
+          type: MessageType.ROOM_ERROR,
+          timestamp: Date.now(),
+          payload: { error: '至少需要2名玩家才能开始' },
+        }));
+        break;
+      }
+
+      // 强制开局
+      console.log('[START_GAME] 所有验证通过，正在调用 startGame()...');
+      console.log('[START_GAME] gameStarted 之前:', session.gameStarted);
+      session.startGame();
+      console.log('[START_GAME] gameStarted 之后:', session.gameStarted);
+      console.log(`[Room] 房主强制开局: ${roomCode}`);
       break;
     }
 
@@ -123,6 +175,29 @@ function handleMessage(
     }
 
     // 游戏操作：广播给其他玩家
+    // END_TURN：切换回合归属 + 广播给其他玩家
+    case MessageType.END_TURN: {
+      const session = rooms.getRoom(roomCode);
+      if (session) {
+        const validation = session.validateAction(playerId, msg.type);
+        if (!validation.valid) {
+          console.log('[Server relay] END_TURN 验证失败:', playerId, '原因:', validation.reason);
+          ws.send(JSON.stringify({ type: MessageType.ROOM_ERROR, timestamp: Date.now(), payload: { error: validation.reason } }));
+          break;
+        }
+        // 更新服务端回合归属到下一人
+        const nextId = (msg.payload as any)?.nextPlayerId;
+        if (nextId) {
+          const idx = session.playerOrder.indexOf(nextId);
+          if (idx >= 0) session.currentPlayerIndex = idx;
+          console.log('[Server] 回合切换 -> player:', nextId, 'index:', idx);
+        }
+        console.log('[Server relay] END_TURN from:', playerId, 'relayed');
+        session.relayAction(playerId, msg);
+      }
+      break;
+    }
+
     case MessageType.DICE_RESULT:
     case MessageType.PLAYER_MOVE:
     case MessageType.MOVE_PATH:
@@ -131,11 +206,22 @@ function handleMessage(
     case MessageType.AUCTION_BID:
     case MessageType.STOCK_TRADE:
     case MessageType.USE_CARD:
-    case MessageType.END_TURN:
     case MessageType.PAY_BAIL:
     case MessageType.STATE_SYNC: {
       const session = rooms.getRoom(roomCode);
       if (session) {
+        // 校验回合归属：只允许当前回合的玩家发送操作
+        const validation = session.validateAction(playerId, msg.type);
+        if (!validation.valid) {
+          console.log('[Server relay] 回合验证失败:', msg.type, '发送者:', playerId, '原因:', validation.reason);
+          ws.send(JSON.stringify({
+            type: MessageType.ROOM_ERROR,
+            timestamp: Date.now(),
+            payload: { error: validation.reason },
+          }));
+          break;
+        }
+        console.log('[Server relay] 中继消息:', msg.type, 'from:', playerId, 'to其他人');
         session.relayAction(playerId, msg);
       }
       break;

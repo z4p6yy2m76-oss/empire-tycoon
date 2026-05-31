@@ -133,14 +133,14 @@ export class ModalUI {
     this.content.querySelectorAll('.stock-buy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const stockId = (btn as HTMLElement).dataset.stock!;
-        const shares = parseInt(prompt('买入股数:', '10') || '10');
+        const shares = 10; // 默认买入10股
         if (shares > 0) onBuy(stockId, shares);
       });
     });
     this.content.querySelectorAll('.stock-short-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const stockId = (btn as HTMLElement).dataset.stock!;
-        const shares = parseInt(prompt('做空股数:', '10') || '10');
+        const shares = 10; // 默认做空10股
         if (shares > 0) onShort(stockId, shares);
       });
     });

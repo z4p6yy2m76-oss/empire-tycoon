@@ -26,6 +26,7 @@ export class NetworkClient {
   private messageQueue: NetworkMessage[] = [];
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private intentionalDisconnect: boolean = false; // 用户主动离开房间时不重连
 
   // ===== 联机展示配置 - Cloudflare Tunnel 适配 =====
   // 不再写死端口 3001，改为使用当前页面的域名 + /ws 路径
@@ -42,6 +43,7 @@ export class NetworkClient {
     this.roomCode = roomCode;
     this.playerName = playerName;
     this.state = ConnectionState.CONNECTING;
+    this.intentionalDisconnect = false; // 重置主动断开标记
 
     try {
       this.ws = new WebSocket(this.url);
@@ -81,12 +83,18 @@ export class NetworkClient {
   }
 
   send(msg: NetworkMessage): void {
-    msg.playerId = this.playerId;
+    // 自动附加 playerId 和 roomCode，服务端靠这些字段定位房间和玩家
+    msg.playerId = msg.playerId || this.playerId;
+    msg.roomCode = msg.roomCode || this.roomCode;
+
+    console.log('[NetClient] send type=', msg.type, 'roomCode=', msg.roomCode, 'playerId=', msg.playerId, 'ws.readyState=', this.ws?.readyState);
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(serializeMessage(msg));
+      console.log('[NetClient] 消息已通过 WebSocket 发送');
     } else {
       this.messageQueue.push(msg);
+      console.log('[NetClient] WebSocket未打开, 消息入队列 (队列长度:', this.messageQueue.length, ')');
     }
   }
 
@@ -95,21 +103,38 @@ export class NetworkClient {
   }
 
   disconnect(): void {
+    this.intentionalDisconnect = true; // 阻止自动重连
     this.send(createMessage(MessageType.LEAVE_ROOM));
     this.stopPing();
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
+      this.ws.onclose = null; // 解绑 onclose，防止触发 scheduleReconnect
       this.ws.close();
       this.ws = null;
     }
     this.state = ConnectionState.DISCONNECTED;
+    this.roomCode = '';
+    this.playerId = '';
   }
 
   private handleMessage(msg: NetworkMessage): void {
     switch (msg.type) {
+      // ===== 房间信息：更新 roomCode + 转发完整消息给 main.ts 处理玩家列表 =====
       case MessageType.ROOM_INFO:
-        this.playerId = msg.playerId ?? '';
+        // 只在 playerId 尚未设置时写入（首次 ROOM_INFO 胜出）。
+        // addPlayer 广播的 ROOM_INFO 携带的是新加入者的 playerId，不能覆盖本地已设的 ID。
+        if (msg.playerId && !this.playerId) {
+          this.playerId = msg.playerId;
+          console.log('[NetClient] playerId 首次设置:', this.playerId);
+        }
+        if (msg.roomCode) this.roomCode = msg.roomCode;
+        console.log('[NetClient] ROOM_INFO 处理完成, playerId:', this.playerId, 'roomCode:', this.roomCode);
         bus.emit('network.connect', { roomCode: this.roomCode });
+        // 同时转发到 network.message，让 main.ts 重建玩家列表
+        bus.emit('network.message', { type: msg.type, payload: msg.payload, playerId: msg.playerId });
         break;
 
       case MessageType.STATE_SYNC:
@@ -120,16 +145,19 @@ export class NetworkClient {
         bus.emit('network.disconnect', { playerId: msg.playerId ?? '' });
         break;
 
+      // ===== 游戏开始：传递完整 payload + 同时转发到 network.message =====
       case MessageType.GAME_START:
         bus.emit('game.start', undefined);
+        bus.emit('network.message', { type: msg.type, payload: msg.payload });
         break;
 
       case MessageType.GAME_OVER:
         bus.emit('game.over', { winnerId: (msg.payload as any)?.winnerId ?? '' });
         break;
 
+      // ===== 其他消息（PLAYER_READY 等）统一走 network.message =====
       default:
-        bus.emit('network.message', { type: msg.type, payload: msg.payload });
+        bus.emit('network.message', { type: msg.type, payload: msg.payload, playerId: msg.playerId });
     }
   }
 
@@ -143,11 +171,14 @@ export class NetworkClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.intentionalDisconnect) return; // 用户主动离开，不重连
     if (this.reconnectTimer) return;
     this.state = ConnectionState.RECONNECTING;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect(this.roomCode, this.playerName);
+      if (!this.intentionalDisconnect) {
+        this.connect(this.roomCode, this.playerName);
+      }
     }, 3000);
   }
 
@@ -183,8 +214,23 @@ export class NetworkClient {
     this.connect(roomCode, playerName);
   }
 
-  /** 准备就绪 */
+  /** 房主强制开局（需至少2人在房间） */
+  forceStartGame(): void {
+    console.log('[forceStartGame] ===== 客户端发起强制开局 =====');
+    console.log('[forceStartGame] playerId:', this.playerId, '(空=true)');
+    console.log('[forceStartGame] roomCode:', this.roomCode, '(空=true)');
+    console.log('[forceStartGame] ws.readyState:', this.ws?.readyState, '(1=OPEN)');
+    console.log('[forceStartGame] isConnected:', this.isConnected());
+    this.send({
+      type: MessageType.START_GAME,
+      timestamp: Date.now(),
+    });
+    console.log('[forceStartGame] START_GAME 消息已调用 send()');
+  }
+
+  /** 准备就绪（加入者切换准备状态） */
   setReady(): void {
+    console.log('[NetClient] setReady, ws.readyState=', this.ws?.readyState, 'roomCode=', this.roomCode, 'playerId=', this.playerId);
     this.send({
       type: MessageType.PLAYER_READY,
       timestamp: Date.now(),

@@ -47,15 +47,8 @@ export class MainMenuUI {
   }
 
   private handleOnlineMode(): void {
-    const roomCode = prompt('输入房间码（留空创建新房间）：')?.trim() ?? '';
+    // 直接进入联机流程，房间码/身份/昵称由 OnlineModalUI 自定义弹窗收集
     state.settings.mode = GameMode.ONLINE;
-    if (roomCode) {
-      state.settings.playerCount = 4;
-      state.settings.humanPlayers = 4;
-    } else {
-      state.settings.playerCount = 4;
-      state.settings.humanPlayers = 1;
-    }
     this.onStartGame?.(GameMode.ONLINE);
   }
 

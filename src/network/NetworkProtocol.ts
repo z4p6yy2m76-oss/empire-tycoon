@@ -11,9 +11,10 @@ export enum MessageType {
   ROOM_INFO = 'ROOM_INFO',
   ROOM_ERROR = 'ROOM_ERROR',
 
-  // 准备
+  // 准备与开局
   PLAYER_READY = 'PLAYER_READY',
-  GAME_START = 'GAME_START',
+  START_GAME = 'START_GAME',       // 房主强制开局（client → server）
+  GAME_START = 'GAME_START',       // 服务器广播游戏开始（server → client）
 
   // 游戏操作
   ROLL_DICE = 'ROLL_DICE',

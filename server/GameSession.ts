@@ -65,12 +65,17 @@ export class GameSession {
     });
   }
 
+  /** 切换玩家准备状态，广播更新后的玩家列表，全员就绪后自动开局 */
   setReady(playerId: string): boolean {
     const player = this.players.get(playerId);
     if (!player) return false;
-    player.ready = true;
+    // 切换准备状态（支持准备/取消准备）
+    player.ready = !player.ready;
 
-    // 检查所有人是否就绪
+    // 广播最新玩家列表，所有客户端同步准备状态
+    this.broadcastRoomInfo();
+
+    // 检查所有人是否就绪（至少2人）
     const allReady = [...this.players.values()].every(p => p.ready);
     if (allReady && this.players.size >= 2) {
       this.startGame();
@@ -79,7 +84,23 @@ export class GameSession {
     return false;
   }
 
+  /** 广播当前房间玩家列表 */
+  broadcastRoomInfo(): void {
+    this.broadcast({
+      type: MessageType.ROOM_INFO,
+      roomCode: this.roomCode,
+      timestamp: Date.now(),
+      payload: {
+        roomCode: this.roomCode,
+        players: [...this.players.values()].map(p => ({
+          id: p.id, name: p.name, ready: p.ready, connected: p.connected, color: p.color,
+        })),
+      },
+    });
+  }
+
   startGame(): void {
+    if (this.gameStarted) return; // 防止重复开局
     this.gameStarted = true;
     this.currentPlayerIndex = 0;
     const firstPlayer = this.players.get(this.playerOrder[0]);
@@ -228,7 +249,7 @@ export class GameSession {
     const validActions = [
       'ROLL_DICE', 'DICE_RESULT', 'PLAYER_MOVE', 'BUY_PROPERTY',
       'UPGRADE_PROPERTY', 'AUCTION_BID', 'STOCK_TRADE',
-      'USE_CARD', 'END_TURN', 'PAY_BAIL', 'SKIP',
+      'USE_CARD', 'END_TURN', 'PAY_BAIL', 'MOVE_PATH', 'STATE_SYNC', 'SKIP',
     ];
 
     if (!validActions.includes(actionType)) {

@@ -34,7 +34,7 @@ export type EventMap = {
   'cpi.update': { value: number; multiplier: number };
   'network.connect': { roomCode: string };
   'network.disconnect': { playerId: string };
-  'network.message': { type: string; payload: unknown };
+  'network.message': { type: string; payload: unknown; playerId?: string };
   'state.sync': { snapshot: GameSnapshot };
   'ui.button.click': { buttonId: string };
   'ui.modal.close': void;

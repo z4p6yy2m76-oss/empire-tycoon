@@ -5,6 +5,7 @@ import { ModalUI } from './ModalUI';
 import { EventLogUI } from './EventLogUI';
 import { NotificationUI } from './NotificationUI';
 import { DashboardUI } from './DashboardUI';
+import { LobbyUI } from './LobbyUI';
 
 export class UIManager {
   mainMenu: MainMenuUI;
@@ -14,6 +15,7 @@ export class UIManager {
   log: EventLogUI;
   notify: NotificationUI;
   dashboard: DashboardUI;
+  lobby: LobbyUI;
 
   private root: HTMLElement;
   private shortcutBar: HTMLElement;
@@ -29,6 +31,7 @@ export class UIManager {
     this.log = new EventLogUI(this.root.querySelector('#event-log')!);
     this.notify = new NotificationUI(this.root.querySelector('#notification')!);
     this.dashboard = new DashboardUI(this.root.querySelector('#dashboard')!);
+    this.lobby = new LobbyUI();
   }
 
   enterGame(): void {
